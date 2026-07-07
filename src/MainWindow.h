@@ -95,11 +95,11 @@ private:
     bool startOllamaProcess(QProcess *process, const QStringList &arguments);
     bool saveToPath(const QString &path);
     bool maybeSave();
-    bool writePdf(const QString &path, bool includeSynopsis);
-    QString formattedPdfHtml(bool includeSynopsis) const;
-    QString synopsisPdfHtml() const;
+    bool writeScreenplayPdf(const QString &path);
+    bool writeAnalyticsPdf(const QString &path);
+    QString formattedScriptPdfHtml() const;
     QString formattedScriptHtml() const;
-    QString synopsisPageHtml() const;
+    QString analyticsPdfHtml() const;
     QString lineToHtml(const FountainLine &line) const;
     QString selectedCharacterName() const;
     QString characterPrompt(const QString &name) const;

@@ -5,8 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${ROOT_DIR}/build/macos-release"
 DIST_DIR="${ROOT_DIR}/dist/macos"
 
-cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release
-cmake --build "${BUILD_DIR}" --config Release
+cmake --preset macos-release
+cmake --build --preset macos-release --config Release
 
 cmake -E rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"

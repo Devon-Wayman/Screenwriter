@@ -10,6 +10,7 @@
 #include <QComboBox>
 #include <QColor>
 #include <QDesktopServices>
+#include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -25,7 +26,6 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QNetworkReply>
-#include <QPainter>
 #include <QPlainTextEdit>
 #include <QPrinter>
 #include <QPushButton>
@@ -153,6 +153,20 @@ QString machineSummary(double memoryGb)
     return parts.join(QStringLiteral("\n"));
 }
 
+QString userPreferencesPath()
+{
+    QString configDir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    if (configDir.isEmpty()) {
+        configDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    }
+    if (configDir.isEmpty()) {
+        configDir = QDir::home().filePath(QStringLiteral(".screenwriter"));
+    }
+
+    QDir().mkpath(configDir);
+    return QDir(configDir).filePath(QStringLiteral("userprefs.ini"));
+}
+
 QString modelCompatibilityText(const QJsonObject &spec, double memoryGb)
 {
     const double minimumRam = spec.value(QStringLiteral("minimumRamGb")).toDouble();
@@ -167,39 +181,6 @@ QString modelCompatibilityText(const QJsonObject &spec, double memoryGb)
         return QStringLiteral("Compatibility: Usable. Detected memory meets the minimum, but responses may be slower.");
     }
     return QStringLiteral("Compatibility: Not recommended. Detected memory is below the listed minimum.");
-}
-
-bool renderDocumentToPrinter(QTextDocument &document, QPrinter &printer, QPainter &painter, bool &hasPrintedPage)
-{
-    const QRectF pointRect = printer.pageRect(QPrinter::Point);
-    const QRectF deviceRect = printer.pageRect(QPrinter::DevicePixel);
-    if (pointRect.isEmpty() || deviceRect.isEmpty()) {
-        return false;
-    }
-
-    document.setPageSize(pointRect.size());
-    const int pageCount = qMax(1, qCeil(document.size().height() / pointRect.height()));
-    const double scaleX = deviceRect.width() / pointRect.width();
-    const double scaleY = deviceRect.height() / pointRect.height();
-
-    for (int page = 0; page < pageCount; ++page) {
-        if (hasPrintedPage && !printer.newPage()) {
-            return false;
-        }
-
-        hasPrintedPage = true;
-        painter.save();
-        painter.translate(deviceRect.left(), deviceRect.top());
-        painter.scale(scaleX, scaleY);
-
-        const QRectF source(0, page * pointRect.height(), pointRect.width(), pointRect.height());
-        painter.setClipRect(QRectF(0, 0, pointRect.width(), pointRect.height()));
-        painter.translate(0, -source.top());
-        document.drawContents(&painter, source);
-        painter.restore();
-    }
-
-    return true;
 }
 
 QString minutesText(double minutes)
@@ -246,7 +227,7 @@ void MainWindow::buildUi()
     saveAsAction->setShortcut(QKeySequence::SaveAs);
     fileMenu->addSeparator();
     auto *exportPdfAction = fileMenu->addAction(QStringLiteral("Export PDF..."));
-    auto *exportPdfWithSynopsisAction = fileMenu->addAction(QStringLiteral("Export PDF with Synopsis..."));
+    auto *exportPdfWithSynopsisAction = fileMenu->addAction(QStringLiteral("Export Screenplay and Analytics PDFs..."));
 
     auto *editMenu = menuBar()->addMenu(QStringLiteral("Edit"));
     auto *findAction = editMenu->addAction(QStringLiteral("Find"));
@@ -534,35 +515,36 @@ void MainWindow::exportPdf()
     if (path.isEmpty()) {
         return;
     }
-    writePdf(path, false);
+    writeScreenplayPdf(path);
 }
 
 void MainWindow::exportPdfWithSynopsis()
 {
-    if (synopsisEdit->toPlainText().trimmed().isEmpty()) {
-        const auto choice = QMessageBox::question(
-            this,
-            QStringLiteral("No Synopsis"),
-            QStringLiteral("The synopsis/report panel is empty. Export with a blank synopsis page?"),
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::No);
-        if (choice != QMessageBox::Yes) {
-            return;
-        }
-    }
-
     const QString baseName = currentPath.isEmpty()
-                                 ? QStringLiteral("Untitled-with-synopsis.pdf")
-                                 : QFileInfo(currentPath).completeBaseName() + QStringLiteral("-with-synopsis.pdf");
+                                 ? QStringLiteral("Untitled.pdf")
+                                 : QFileInfo(currentPath).completeBaseName() + QStringLiteral(".pdf");
     const QString path = QFileDialog::getSaveFileName(
         this,
-        QStringLiteral("Export PDF with Synopsis"),
+        QStringLiteral("Export Screenplay and Analytics PDFs"),
         baseName,
         QStringLiteral("PDF files (*.pdf)"));
     if (path.isEmpty()) {
         return;
     }
-    writePdf(path, true);
+
+    QString screenplayPath = path;
+    if (!screenplayPath.endsWith(QStringLiteral(".pdf"), Qt::CaseInsensitive)) {
+        screenplayPath += QStringLiteral(".pdf");
+    }
+
+    const QFileInfo screenplayInfo(screenplayPath);
+    const QString analyticsPath = screenplayInfo.dir().filePath(screenplayInfo.completeBaseName() + QStringLiteral("-analytics.pdf"));
+
+    const bool screenplayExported = writeScreenplayPdf(screenplayPath);
+    const bool analyticsExported = screenplayExported && writeAnalyticsPdf(analyticsPath);
+    if (screenplayExported && analyticsExported) {
+        statusBar()->showMessage(QStringLiteral("Exported screenplay PDF %1 and analytics PDF %2").arg(screenplayPath, analyticsPath), 5000);
+    }
 }
 
 void MainWindow::fillSample()
@@ -608,7 +590,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
 void MainWindow::loadSettings()
 {
     loadingSettings = true;
-    QSettings settings;
+    QSettings settings(userPreferencesPath(), QSettings::IniFormat);
     editorPointSize = settings.value(QStringLiteral("editor/pointSize"), editorPointSize).toInt();
     editorPointSize = qBound(10, editorPointSize, 28);
     const QString savedModel = settings.value(QStringLiteral("ollama/model"), recommendedModel()).toString();
@@ -645,13 +627,14 @@ void MainWindow::loadSettings()
 
 void MainWindow::saveSettings()
 {
-    QSettings settings;
+    QSettings settings(userPreferencesPath(), QSettings::IniFormat);
     settings.setValue(QStringLiteral("editor/pointSize"), editorPointSize);
     settings.setValue(QStringLiteral("view/theme"), themeToSettingsValue(currentTheme));
     settings.setValue(QStringLiteral("ollama/model"), recommendedModel());
     settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
     settings.setValue(QStringLiteral("window/splitter"), mainSplitter->saveState());
     settings.setValue(QStringLiteral("files/lastPath"), currentPath);
+    settings.sync();
 }
 
 bool MainWindow::loadDocumentFromPath(const QString &path)
@@ -742,19 +725,21 @@ void MainWindow::installOllama()
         return;
     }
 
+#ifdef Q_OS_MACOS
     const QString brew = QStandardPaths::findExecutable(QStringLiteral("brew"), {
         QStringLiteral("/opt/homebrew/bin"),
         QStringLiteral("/usr/local/bin")
     });
-    if (brew.isEmpty()) {
-        QDesktopServices::openUrl(QUrl(QStringLiteral("https://ollama.com/download")));
-        synopsisEdit->setPlainText(QStringLiteral("Homebrew was not found, so the Ollama download page was opened."));
+    if (!brew.isEmpty()) {
+        installOllamaButton->setEnabled(false);
+        synopsisEdit->setPlainText(QStringLiteral("Installing Ollama with Homebrew..."));
+        ollamaInstallProcess.start(brew, {QStringLiteral("install"), QStringLiteral("ollama")});
         return;
     }
+#endif
 
-    installOllamaButton->setEnabled(false);
-    synopsisEdit->setPlainText(QStringLiteral("Installing Ollama with Homebrew..."));
-    ollamaInstallProcess.start(brew, {QStringLiteral("install"), QStringLiteral("ollama")});
+    QDesktopServices::openUrl(QUrl(QStringLiteral("https://ollama.com/download")));
+    synopsisEdit->setPlainText(QStringLiteral("The Ollama download page was opened. Install Ollama, start it, then press Check."));
 }
 
 void MainWindow::installRecommendedModel()
@@ -1226,12 +1211,61 @@ void MainWindow::updateFindMatches()
 
 QString MainWindow::ollamaExecutable() const
 {
-    return QStandardPaths::findExecutable(QStringLiteral("ollama"), {
-        QStringLiteral("/opt/homebrew/bin"),
-        QStringLiteral("/usr/local/bin"),
-        QStringLiteral("/usr/bin"),
-        QStringLiteral("/bin")
-    });
+#ifdef Q_OS_WIN
+    const QString executableName = QStringLiteral("ollama.exe");
+#else
+    const QString executableName = QStringLiteral("ollama");
+#endif
+
+    const QString fromPath = QStandardPaths::findExecutable(executableName);
+    if (!fromPath.isEmpty()) {
+        return fromPath;
+    }
+
+    QStringList searchPaths;
+#ifdef Q_OS_WIN
+    const QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
+    const QString programFiles = qEnvironmentVariable("ProgramFiles");
+    const QString programFilesX86 = qEnvironmentVariable("ProgramFiles(x86)");
+    if (!localAppData.isEmpty()) {
+        searchPaths << QDir(localAppData).filePath(QStringLiteral("Programs/Ollama"));
+    }
+    if (!programFiles.isEmpty()) {
+        searchPaths << QDir(programFiles).filePath(QStringLiteral("Ollama"));
+        searchPaths << QDir(programFiles).filePath(QStringLiteral("Ollama Inc/Ollama"));
+    }
+    if (!programFilesX86.isEmpty()) {
+        searchPaths << QDir(programFilesX86).filePath(QStringLiteral("Ollama"));
+        searchPaths << QDir(programFilesX86).filePath(QStringLiteral("Ollama Inc/Ollama"));
+    }
+#elif defined(Q_OS_MACOS)
+    searchPaths << QStringLiteral("/opt/homebrew/bin")
+                << QStringLiteral("/usr/local/bin")
+                << QStringLiteral("/usr/bin")
+                << QStringLiteral("/Applications/Ollama.app/Contents/Resources")
+                << QDir::home().filePath(QStringLiteral("Applications/Ollama.app/Contents/Resources"));
+#else
+    searchPaths << QStringLiteral("/usr/local/bin")
+                << QStringLiteral("/usr/bin")
+                << QStringLiteral("/bin")
+                << QStringLiteral("/snap/bin")
+                << QDir::home().filePath(QStringLiteral(".local/bin"));
+#endif
+
+    const QString fromKnownLocation = QStandardPaths::findExecutable(executableName, searchPaths);
+    if (!fromKnownLocation.isEmpty()) {
+        return fromKnownLocation;
+    }
+
+    for (const QString &searchPath : searchPaths) {
+        const QString candidate = QDir(searchPath).filePath(executableName);
+        const QFileInfo info(candidate);
+        if (info.isFile() && info.isExecutable()) {
+            return info.absoluteFilePath();
+        }
+    }
+
+    return {};
 }
 
 QString MainWindow::recommendedModel() const
@@ -1360,7 +1394,9 @@ void MainWindow::applyTheme(VisualTheme theme)
         standardThemeAction->setChecked(true);
         break;
     }
-    saveSettings();
+    if (!loadingSettings) {
+        saveSettings();
+    }
 }
 
 bool MainWindow::saveToPath(const QString &path)
@@ -1385,7 +1421,7 @@ bool MainWindow::saveToPath(const QString &path)
     return true;
 }
 
-bool MainWindow::writePdf(const QString &path, bool includeSynopsis)
+bool MainWindow::writeScreenplayPdf(const QString &path)
 {
     analyze();
 
@@ -1401,42 +1437,40 @@ bool MainWindow::writePdf(const QString &path, bool includeSynopsis)
     printer.setPageMargins(QMarginsF(0.65, 0.65, 0.65, 0.65), QPageLayout::Inch);
     printer.setResolution(300);
 
-    if (includeSynopsis) {
-        QTextDocument synopsisDocument;
-        synopsisDocument.setDefaultFont(QFont(QStringLiteral("Helvetica"), 11));
-        synopsisDocument.setHtml(synopsisPdfHtml());
-
-        QTextDocument scriptDocument;
-        scriptDocument.setDefaultFont(QFont(QStringLiteral("Courier"), 12));
-        scriptDocument.setHtml(formattedPdfHtml(false));
-
-        QPainter painter;
-        if (!painter.begin(&printer)) {
-            QMessageBox::warning(this, QStringLiteral("Export Failed"), QStringLiteral("Could not start PDF writer."));
-            return false;
-        }
-
-        bool hasPrintedPage = false;
-        const bool renderedSynopsis = renderDocumentToPrinter(synopsisDocument, printer, painter, hasPrintedPage);
-        const bool renderedScript = renderedSynopsis && renderDocumentToPrinter(scriptDocument, printer, painter, hasPrintedPage);
-        painter.end();
-
-        if (!renderedSynopsis || !renderedScript) {
-            QMessageBox::warning(this, QStringLiteral("Export Failed"), QStringLiteral("Could not render the synopsis and screenplay PDF."));
-            return false;
-        }
-    } else {
-        QTextDocument document;
-        document.setDefaultFont(QFont(QStringLiteral("Courier"), 12));
-        document.setHtml(formattedPdfHtml(false));
-        document.print(&printer);
-    }
+    QTextDocument document;
+    document.setDefaultFont(QFont(QStringLiteral("Courier"), 12));
+    document.setHtml(formattedScriptPdfHtml());
+    document.print(&printer);
 
     statusBar()->showMessage(QStringLiteral("Exported PDF %1").arg(outputPath), 3500);
     return true;
 }
 
-QString MainWindow::formattedPdfHtml(bool includeSynopsis) const
+bool MainWindow::writeAnalyticsPdf(const QString &path)
+{
+    analyze();
+
+    QString outputPath = path;
+    if (!outputPath.endsWith(QStringLiteral(".pdf"), Qt::CaseInsensitive)) {
+        outputPath += QStringLiteral(".pdf");
+    }
+
+    QPrinter printer(QPrinter::HighResolution);
+    printer.setOutputFormat(QPrinter::PdfFormat);
+    printer.setOutputFileName(outputPath);
+    printer.setPageSize(QPageSize(QPageSize::Letter));
+    printer.setPageMargins(QMarginsF(0.55, 0.55, 0.55, 0.55), QPageLayout::Inch);
+    printer.setResolution(300);
+
+    QTextDocument document;
+    document.setDefaultFont(QFont(QStringLiteral("Helvetica"), 10));
+    document.setHtml(analyticsPdfHtml());
+    document.print(&printer);
+
+    return true;
+}
+
+QString MainWindow::formattedScriptPdfHtml() const
 {
     QString html = QStringLiteral(
         "<!doctype html><html><head><meta charset=\"utf-8\">"
@@ -1463,45 +1497,110 @@ QString MainWindow::formattedPdfHtml(bool includeSynopsis) const
         ".synopsis-content { line-height: 1.35; }"
         ".synopsis-content p { margin: 0 0 8pt 0; line-height: 1.35; }"
         "</style></head><body>");
-
-    if (includeSynopsis) {
-        html += synopsisPageHtml();
-        html += QStringLiteral("<div class=\"page-break\">&nbsp;</div>");
-    }
     html += formattedScriptHtml();
     html += QStringLiteral("</body></html>");
     return html;
 }
 
-QString MainWindow::synopsisPdfHtml() const
+QString MainWindow::analyticsPdfHtml() const
 {
-    return QStringLiteral(
-               "<!doctype html><html><head><meta charset=\"utf-8\">"
-               "<style>"
-               "body { font-family: Helvetica, Arial, sans-serif; font-size: 11pt; color: #000; }"
-               "p { margin: 0 0 8pt 0; line-height: 1.35; }"
-               "h1 { font-size: 20pt; margin: 0 0 18pt 0; }"
-               ".synopsis-content { line-height: 1.35; }"
-               ".synopsis-content p { margin: 0 0 8pt 0; line-height: 1.35; }"
-               "</style></head><body>%1</body></html>")
-        .arg(synopsisPageHtml());
-}
+    const QString title = currentPath.isEmpty()
+                              ? QStringLiteral("Untitled Screenplay")
+                              : QFileInfo(currentPath).completeBaseName().toHtmlEscaped();
 
-QString MainWindow::synopsisPageHtml() const
-{
-    const QString heading = currentPath.isEmpty()
-                                ? QStringLiteral("Synopsis")
-                                : QFileInfo(currentPath).completeBaseName().toHtmlEscaped() + QStringLiteral(" - Synopsis");
     QString synopsis;
     if (synopsisEdit->toPlainText().trimmed().isEmpty()) {
-        synopsis = QStringLiteral("<p>No synopsis/report text was available at export time.</p>");
+        synopsis = QStringLiteral("<p class=\"muted\">No generated synopsis or script report was available at export time.</p>");
     } else {
         QTextCursor cursor(synopsisEdit->document());
         cursor.select(QTextCursor::Document);
         synopsis = htmlBodyContents(QTextDocumentFragment(cursor).toHtml());
     }
-    return QStringLiteral("<div class=\"synopsis-page\"><h1>%1</h1><div class=\"synopsis-content\">%2</div></div>")
-        .arg(heading, synopsis);
+
+    QString characterRows;
+    for (const CharacterStats &stats : currentDocument.characters) {
+        characterRows += QStringLiteral(
+                             "<tr>"
+                             "<td class=\"name\">%1</td>"
+                             "<td>%2</td>"
+                             "<td>%3</td>"
+                             "<td>%4</td>"
+                             "<td>%5</td>"
+                             "</tr>")
+                             .arg(stats.name.toHtmlEscaped())
+                             .arg(stats.dialogueLines)
+                             .arg(stats.dialogueWords)
+                             .arg(stats.sceneCount)
+                             .arg(durationText(stats.estimatedSeconds).toHtmlEscaped());
+    }
+    if (characterRows.isEmpty()) {
+        characterRows = QStringLiteral("<tr><td colspan=\"5\" class=\"muted\">No character dialogue detected.</td></tr>");
+    }
+
+    QString diagnosticRows;
+    const int diagnosticLimit = qMin(30, currentDocument.diagnostics.size());
+    for (int i = 0; i < diagnosticLimit; ++i) {
+        const FountainDiagnostic &diagnostic = currentDocument.diagnostics.at(i);
+        diagnosticRows += QStringLiteral("<li><span>Line %1</span>%2</li>")
+                              .arg(diagnostic.line + 1)
+                              .arg(diagnostic.message.toHtmlEscaped());
+    }
+    if (currentDocument.diagnostics.size() > diagnosticLimit) {
+        diagnosticRows += QStringLiteral("<li><span>More</span>%1 additional corrections omitted.</li>")
+                              .arg(currentDocument.diagnostics.size() - diagnosticLimit);
+    }
+    if (diagnosticRows.isEmpty()) {
+        diagnosticRows = QStringLiteral("<li><span>Status</span>No parser corrections flagged.</li>");
+    }
+
+    return QStringLiteral(
+               "<!doctype html><html><head><meta charset=\"utf-8\">"
+               "<style>"
+               "body { font-family: Helvetica, Arial, sans-serif; color: #15171a; font-size: 10.5pt; }"
+               "h1 { font-size: 24pt; margin: 0 0 4pt 0; color: #111827; }"
+               "h2 { font-size: 13pt; margin: 22pt 0 8pt 0; color: #1f2937; border-bottom: 1px solid #d7dde5; padding-bottom: 4pt; }"
+               "p { margin: 0 0 8pt 0; line-height: 1.35; }"
+               ".dek { color: #5b6472; font-size: 10pt; margin-bottom: 18pt; }"
+               ".metrics { width: 100%; border-collapse: collapse; margin: 10pt 0 16pt 0; }"
+               ".metrics td { width: 25%; vertical-align: top; padding: 9pt; border: 1px solid #d7dde5; background: #f7f9fb; }"
+               ".label { display: block; color: #667085; font-size: 8pt; text-transform: uppercase; letter-spacing: .04em; }"
+               ".value { display: block; margin-top: 3pt; font-size: 15pt; font-weight: 700; color: #111827; }"
+               "table.characters { width: 100%; border-collapse: collapse; margin-top: 6pt; }"
+               "table.characters th { background: #1f2937; color: white; text-align: left; padding: 6pt; font-size: 9pt; }"
+               "table.characters td { border-bottom: 1px solid #e2e7ee; padding: 6pt; }"
+               "table.characters tr:nth-child(even) td { background: #f8fafc; }"
+               ".name { font-weight: 700; }"
+               ".synopsis { line-height: 1.4; }"
+               ".synopsis h1, .synopsis h2, .synopsis h3 { font-size: 12pt; margin: 12pt 0 6pt 0; border: 0; padding: 0; }"
+               ".synopsis ul, .synopsis ol { margin-top: 4pt; }"
+               ".corrections { margin: 0; padding-left: 0; }"
+               ".corrections li { list-style: none; margin: 0 0 5pt 0; padding: 5pt 7pt; background: #fff7ed; border-left: 3pt solid #f59e0b; }"
+               ".corrections span { display: inline-block; min-width: 45pt; font-weight: 700; color: #92400e; }"
+               ".muted { color: #667085; font-style: italic; }"
+               "</style></head><body>"
+               "<h1>%1 Analytics</h1>"
+               "<p class=\"dek\">Parser metrics, character presence, corrections, and generated synopsis/report.</p>"
+               "<table class=\"metrics\"><tr>"
+               "<td><span class=\"label\">Scenes</span><span class=\"value\">%2</span></td>"
+               "<td><span class=\"label\">Characters</span><span class=\"value\">%3</span></td>"
+               "<td><span class=\"label\">Words</span><span class=\"value\">%4</span></td>"
+               "<td><span class=\"label\">Estimated Runtime</span><span class=\"value\">%5</span></td>"
+               "</tr></table>"
+               "<h2>Generated Synopsis / Report</h2>"
+               "<div class=\"synopsis\">%6</div>"
+               "<h2>Character Presence</h2>"
+               "<table class=\"characters\"><thead><tr><th>Character</th><th>Dialogue Lines</th><th>Words</th><th>Scenes</th><th>Est. Time</th></tr></thead><tbody>%7</tbody></table>"
+               "<h2>Parser Corrections</h2>"
+               "<ul class=\"corrections\">%8</ul>"
+               "</body></html>")
+        .arg(title)
+        .arg(currentDocument.sceneCount)
+        .arg(currentDocument.characters.size())
+        .arg(currentDocument.wordCount)
+        .arg(estimatedRuntimeText().toHtmlEscaped())
+        .arg(synopsis)
+        .arg(characterRows)
+        .arg(diagnosticRows);
 }
 
 QString MainWindow::formattedScriptHtml() const

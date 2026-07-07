@@ -10,28 +10,20 @@ A native C++/Qt Fountain editor for screenplays, stageplays, and related script 
 - Character extraction with dialogue word counts, scene counts, and rough screen/stage time estimates.
 - Editor search with next/previous navigation, wraparound, case-sensitive mode, and match counts.
 - Scene navigation with a live **Navigate > Scenes** menu plus next/previous scene commands.
-- PDF export for formatted screenplay/stageplay output, with an option to add the current synopsis/report as the first page.
+- PDF export for formatted screenplay/stageplay output, plus a separate analytics PDF with synopsis/report text, character counts, estimated runtime, and parser corrections.
 - Optional local Ollama synopsis generation for the selected character, using multi-pass analysis across every relevant scene.
 - Optional local Ollama whole-script reports with synopsis, rating recommendation, rating basis, runtime estimate, audience fit, character balance, and revision notes. Long scripts are analyzed in chunks first, then synthesized into a final report.
 
 ## Build
 
-```sh
-cmake -S . -B build
-cmake --build build
-```
-
-Run on macOS:
+The project uses CMake presets for shared configure/build settings:
 
 ```sh
-open build/Screenwriter.app
+cmake --preset linux-release
+cmake --build --preset linux-release
 ```
 
-Or run the executable directly:
-
-```sh
-./build/Screenwriter.app/Contents/MacOS/Screenwriter
-```
+Available presets are `windows-release`, `macos-release`, and `linux-release`.
 
 ## Platform Builds
 
@@ -47,27 +39,41 @@ Linux:
 ./scripts/build-linux.sh
 ```
 
-Windows, from a Qt-enabled PowerShell or Developer PowerShell:
+Windows:
 
 ```powershell
 .\scripts\build-windows.ps1
 ```
 
-The scripts create release builds under `build/` and stage deployable files under `dist/`. On macOS the script uses `macdeployqt` when available. On Windows the script uses `windeployqt` when available.
+Windows prerequisites:
+
+- Visual Studio with the **Desktop development with C++** workload.
+- Qt 6 with the **MSVC 2022 64-bit** kit.
+- CMake and Ninja in `PATH`.
+
+The Windows script initializes the MSVC compiler environment automatically when run from a normal PowerShell. It looks for Qt in `Qt6_DIR`, `QTDIR`, and common `C:\Qt\...\msvc2022_64` locations. If Qt is somewhere else, pass it explicitly:
+
+```powershell
+.\scripts\build-windows.ps1 -QtDir C:\Qt\6.11.1\msvc2022_64
+```
+
+The scripts create release builds under `build/` and stage deployable files under `dist/`. On Windows, run `dist\windows\Screenwriter.exe`; the build-tree executable under `build\windows-release` is not bundled with Qt DLLs. On macOS the script uses `macdeployqt` when available. On Windows the script uses `windeployqt` when available.
 
 ## Preferences
 
-Screenwriter stores user preferences with Qt `QSettings`, which uses the native settings location for each OS:
+Screenwriter stores user preferences in an explicit `userprefs.ini` file under Qt's per-user application config folder. This keeps preferences persistent without using the Windows registry and avoids shared machine-wide locations like `ProgramData` for per-user choices.
 
-- macOS: app preferences, usually under `~/Library/Preferences`
-- Windows: user settings, commonly the registry-backed Qt location
-- Linux: config files under the user config directory, commonly `~/.config`
+The app remembers the last opened file path, selected color theme, editor text size, Ollama model name, window geometry, and the screenplay/analysis divider position. On startup, if the last opened file path still exists, Screenwriter opens it automatically; otherwise it starts with the sample document.
 
-The app remembers the last opened file, editor text size, selected color theme, Ollama model name, window geometry, and the screenplay/analysis divider position.
+Typical preference file locations are:
+
+- Windows: `%LOCALAPPDATA%\Local\Screenwriter\userprefs.ini` or the equivalent Qt app config path for the current user.
+- macOS: `~/Library/Preferences/Local/Screenwriter/userprefs.ini` or the equivalent Qt app config path.
+- Linux: `~/.config/Local/Screenwriter/userprefs.ini` or the equivalent Qt app config path.
 
 ## Ollama
 
-The app checks for Ollama when it starts. If Ollama is missing, use **Install Ollama** in the right panel. If Homebrew is available, the app runs `brew install ollama`; otherwise it opens the Ollama download page.
+The app checks for Ollama when it starts. It first uses `PATH`, then checks common platform install locations: `%LOCALAPPDATA%\Programs\Ollama` and `Program Files` on Windows, Homebrew and `/Applications/Ollama.app` locations on macOS, and `/usr/local/bin`, `/usr/bin`, `/bin`, `/snap/bin`, and `~/.local/bin` on Linux. If Ollama is missing, use **Install Ollama** in the right panel. On macOS, if Homebrew is available, the app runs `brew install ollama`; otherwise it opens the Ollama download page.
 
 Once Ollama is installed and running, use the model dropdown to choose a recommended local model. Missing models are shown as not installed; selecting one or pressing **Install Model** compares the packaged model recommendations against the current system's detected OS, CPU architecture, and memory before downloading with Ollama. The default is:
 
@@ -82,7 +88,7 @@ Use **Character Synopsis** for the selected character or **Script Report** for t
 
 ## PDF Export
 
-Use **File > Export PDF...** to export the current Fountain document as a formatted PDF. Use **File > Export PDF with Synopsis...** to place the current synopsis/report panel on the first page, followed by the formatted script.
+Use **File > Export PDF...** to export only the current Fountain document as a formatted screenplay PDF. Use **File > Export Screenplay and Analytics PDFs...** to create two sibling files: the screenplay PDF you selected and a separate `-analytics.pdf` report containing the generated synopsis/report, parser metrics, character dialogue counts, estimated time, and corrections.
 
 ## Accessibility
 

@@ -7,6 +7,9 @@ cmake_install.cmake
 compile_commands.json
 Makefile
 
+# Test file ignore
+A Beautiful Mind.fountain
+
 # Distribution/package output
 dist/
 *.dmg

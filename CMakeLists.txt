@@ -22,9 +22,15 @@ qt_add_executable(Screenwriter
 
 target_link_libraries(Screenwriter PRIVATE Qt6::Widgets Qt6::Network Qt6::PrintSupport)
 
+if(WIN32)
+    set(SCREENWRITER_RUNTIME_DESTINATION .)
+else()
+    set(SCREENWRITER_RUNTIME_DESTINATION bin)
+endif()
+
 install(TARGETS Screenwriter
     BUNDLE DESTINATION .
-    RUNTIME DESTINATION bin
+    RUNTIME DESTINATION ${SCREENWRITER_RUNTIME_DESTINATION}
 )
 
 if(APPLE)
