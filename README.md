@@ -1,89 +1,216 @@
 # Screenwriter
 
-A native C++/Qt Fountain editor for screenplays, stageplays, and related script formats.
+Screenwriter is a self-hosted, browser-based Fountain 1.1 editor designed for writing screenplays remotely while keeping the source files on storage you control. It runs as a React application with a small Express file API and is packaged as a single Docker container for NAS deployment.
+
+Screenplays remain ordinary `.fountain` text files. There is no proprietary project database or cloud account requirement.
 
 ## Features
 
-- Split workspace: raw Fountain editor on the left, live analysis on the right.
-- Fountain-aware syntax highlighting for title pages, scene headings, characters, dialogue, transitions, notes, sections, synopses, lyrics, and page breaks.
-- Live diagnostics with one-click corrections for common Fountain formatting issues.
-- Character extraction with dialogue word counts, scene counts, and rough screen/stage time estimates.
-- Editor search with next/previous navigation, wraparound, case-sensitive mode, and match counts.
-- Scene navigation with a live **Navigate > Scenes** menu plus next/previous scene commands.
-- PDF export for formatted screenplay/stageplay output, with an option to add the current synopsis/report as the first page.
-- Optional local Ollama synopsis generation for the selected character, using multi-pass analysis across every relevant scene.
-- Optional local Ollama whole-script reports with synopsis, rating recommendation, rating basis, runtime estimate, audience fit, character balance, and revision notes. Long scripts are analyzed in chunks first, then synthesized into a final report.
+### Writing
 
-## Build
+- Fountain 1.1 syntax highlighting with customizable colors
+- Focus Mode with a full-window writing surface
+- Smart Enter and Tab screenplay navigation
+- Application-owned undo and redo history
+- Search, scene navigation, adjustable text size, and multiple themes
+- In-app Fountain and keyboard guide with animated examples
 
-```sh
-cmake -S . -B build
-cmake --build build
-```
+### Fountain 1.1
 
-Run on macOS:
+- Scene headings, action, characters, dialogue, and parentheticals
+- Forced scene, character, action, and transition elements
+- Dual dialogue
+- Notes, boneyards, sections, and synopses
+- Lyrics, centered text, emphasis, escapes, and page breaks
+- Multiline title-page metadata and explicit scene numbers
+- Live diagnostics with one-click corrections
 
-```sh
-open build/Screenwriter.app
-```
+### Analysis
 
-Or run the executable directly:
+- Scene, character, and word counts
+- Dialogue totals by character
+- Character scene counts and estimated speaking time
+- Estimated screenplay runtime
 
-```sh
-./build/Screenwriter.app/Contents/MacOS/Screenwriter
-```
+### Files and output
 
-## Platform Builds
+- NAS-backed `.fountain` and `.txt` file library
+- Atomic server-side saves
+- Safe import that preserves an existing same-named NAS file
+- Fountain source downloads
+- Selectable-text screenplay PDFs
+- US Letter and A4 PDF output
+- Title pages, pagination, inline emphasis, dual-dialogue columns, and optional scene numbers
 
-macOS:
+## Technology
 
-```sh
-./scripts/build-macos.sh
-```
+- React and TypeScript
+- Vite
+- Express
+- jsPDF
+- Vitest
+- Docker using Node 22 Alpine
 
-Linux:
+## Quick start
 
-```sh
-./scripts/build-linux.sh
-```
+Requirements:
 
-Windows, from a Qt-enabled PowerShell or Developer PowerShell:
+- Node.js 22 or newer
+- npm
 
-```powershell
-.\scripts\build-windows.ps1
-```
-
-The scripts create release builds under `build/` and stage deployable files under `dist/`. On macOS the script uses `macdeployqt` when available. On Windows the script uses `windeployqt` when available.
-
-## Preferences
-
-Screenwriter stores user preferences with Qt `QSettings`, which uses the native settings location for each OS:
-
-- macOS: app preferences, usually under `~/Library/Preferences`
-- Windows: user settings, commonly the registry-backed Qt location
-- Linux: config files under the user config directory, commonly `~/.config`
-
-The app remembers the last opened file, editor text size, selected color theme, Ollama model name, window geometry, and the screenplay/analysis divider position.
-
-## Ollama
-
-The app checks for Ollama when it starts. If Ollama is missing, use **Install Ollama** in the right panel. If Homebrew is available, the app runs `brew install ollama`; otherwise it opens the Ollama download page.
-
-Once Ollama is installed and running, use the model dropdown to choose a recommended local model. Missing models are shown as not installed; selecting one or pressing **Install Model** compares the packaged model recommendations against the current system's detected OS, CPU architecture, and memory before downloading with Ollama. The default is:
+Install and run the development servers:
 
 ```sh
-ollama pull llama3.1
+npm install
+npm run dev
 ```
 
-Recommended test models include `llama3.1`, `qwen3:8b`, `qwen3:14b`, and `qwen3:30b`.
+Open `http://localhost:5173`. Vite serves the client and proxies `/api` to the Express server on port `3000`.
 
-The app calls `http://localhost:11434/api/generate` only when you press **Synopsis**.
-Use **Character Synopsis** for the selected character or **Script Report** for the whole screenplay/stageplay.
+Run tests and create a production build:
 
-## PDF Export
+```sh
+npm test
+npm run build
+```
 
-Use **File > Export PDF...** to export the current Fountain document as a formatted PDF. Use **File > Export PDF with Synopsis...** to place the current synopsis/report panel on the first page, followed by the formatted script.
+Run the compiled production server:
 
-## Accessibility
+```sh
+npm start
+```
 
-Use **View > Larger Text**, **Smaller Text**, or **Reset Text Size** to adjust the editor. **View > Color Theme** includes Standard, Warm Low Glare, High Contrast Light, High Contrast Dark, and One Dark Darker presets.
+## Docker
+
+Start with Docker Compose:
+
+```sh
+docker compose up -d --build
+```
+
+Open `http://localhost:3000`. The included Compose file stores screenplays in `./screenplays` on the host:
+
+```yaml
+ports:
+  - "3000:3000"
+volumes:
+  - ./screenplays:/data
+```
+
+For an existing NAS share, change the host side of the mount:
+
+```yaml
+volumes:
+  - /path/on/nas/screenplays:/data
+```
+
+The container uses these environment variables:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `PORT` | `3000` | HTTP port inside the container |
+| `SCREENWRITER_DATA_DIR` | `/data` | Persistent Fountain storage location |
+| `APP_VERSION` | Docker build argument | Version reported by `/api/health` |
+
+## CasaOS and remote access
+
+Screenwriter can be built locally on a CasaOS NAS and installed as a customized application. A typical configuration publishes container port `3000` as host port `3420` and mounts:
+
+```text
+/DATA/AppData/screenwriter/screenplays -> /data
+```
+
+Keep the service private to the LAN or a Tailnet. Screenwriter does not currently provide its own user authentication, so do not expose its port directly to the public internet.
+
+Tailscale users can open it through the NAS MagicDNS name or Tailscale address:
+
+```text
+http://parents-nas:3420
+http://100.x.y.z:3420
+```
+
+## NAS update workflow
+
+Copy the deployment template once:
+
+```sh
+cp .env.deploy.example .env.deploy.local
+```
+
+Fill in the NAS host, SSH user, remote source directory, CasaOS Compose path, service name, image tag, and published port. `.env.deploy.local` is ignored by Git. Use SSH keys or Tailscale SSH; never place a password in the file.
+
+Check connectivity:
+
+```sh
+./scripts/update-nas.sh --check
+```
+
+Deploy a patch release:
+
+```sh
+./scripts/update-nas.sh
+```
+
+The updater:
+
+1. Checks SSH connectivity.
+2. Reads the local and deployed semantic versions.
+3. Increments the newer version.
+4. Synchronizes source files with `rsync`.
+5. Builds the image on the NAS.
+6. Recreates the CasaOS service.
+7. Verifies the expected version through `/api/health`.
+8. Restores the previous Docker image if health verification fails.
+
+Version controls:
+
+```sh
+./scripts/update-nas.sh             # patch: 0.1.2 -> 0.1.3
+./scripts/update-nas.sh --minor     # minor: 0.1.3 -> 0.2.0
+./scripts/update-nas.sh --major     # major: 0.2.0 -> 1.0.0
+./scripts/update-nas.sh --no-bump   # rebuild the current version
+```
+
+When `NAS_USE_SUDO=1`, the deployment connection allocates a terminal so the NAS can request its sudo password. Set it to `0` only when the NAS user can already run Docker without sudo.
+
+## Keyboard shortcuts
+
+| Action | Shortcut |
+|---|---|
+| Save | `Command/Ctrl+S` |
+| Find | `Command/Ctrl+F` |
+| Undo | `Command/Ctrl+Z` |
+| Redo | `Command/Ctrl+Shift+Z` or `Ctrl+Y` |
+| Focus Mode | `Command/Ctrl+Shift+F` |
+| Help | `F1` |
+| Literal line break | `Shift+Enter` |
+
+Smart Tab behavior:
+
+- On a blank line, Tab begins a forced character cue with `@`.
+- Repeated Tab before typing cycles character `@`, action `!`, scene `.`, and transition `>`.
+- After a character or dialogue line, Tab inserts a parenthetical and places the cursor inside it.
+- Elsewhere, Tab inserts four spaces for intentional action indentation.
+
+## Storage and backups
+
+The Docker mount at `/data` is the source of truth for saved screenplays. Importing a local Fountain file immediately copies it there. If the filename already exists, the import receives a numbered name instead of overwriting the stored file.
+
+Include the host screenplay directory in NAS snapshots and off-device backups. A NAS copy alone is not protection against disk failure, accidental deletion, or hardware loss.
+
+## Current limitations
+
+- No built-in authentication or multi-user permissions
+- No offline synchronization or automatic recovery snapshots yet
+- No real-time collaborative editing
+- No Final Draft `.fdx` import/export
+- PDF output does not yet provide locked pages, revision colors, or automatic `(MORE)`/`CONT'D`
+- Undo history is limited to the active browser session
+
+## Theme attributions
+
+The shipped One Dark Darker palette is adapted from Joel Crosby's One Dark Darker VS Code extension. Visual Studio Dark and Light consolidate equivalent palettes contributed by Microsoft's C# and C/C++ extensions. PowerShell ISE is adapted from Microsoft's PowerShell VS Code extension. Only color values are represented; extension code and artwork are not included.
+
+## License
+
+No project license has been selected yet. Add a `LICENSE` file before advertising the repository as open source or accepting outside contributions.

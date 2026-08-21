@@ -1,5 +1,0 @@
-<RCC>
-  <qresource prefix="/">
-    <file>model_specs.json</file>
-  </qresource>
-</RCC>

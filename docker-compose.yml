@@ -1,0 +1,9 @@
+services:
+  screenwriter:
+    build: .
+    container_name: screenwriter
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./screenplays:/data
