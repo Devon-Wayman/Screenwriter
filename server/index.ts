@@ -1,5 +1,5 @@
 import express from 'express';
-import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
@@ -19,11 +19,35 @@ const documentSettingsPath = path.join(dataDir, 'document-settings.json');
 interface OllamaSettings { endpoint: string; model: string }
 interface OllamaModel { name: string; size?: number; modified_at?: string }
 type ProductionType = 'unspecified' | 'stage' | 'feature-film' | 'short-film' | 'television' | 'audio-drama';
+type BudgetTier = 'unspecified' | 'micro' | 'low' | 'medium' | 'high';
+interface ProductionProfile { targetRuntimeMinutes: number | null; targetAudience: string; budgetTier: BudgetTier; castSizeTarget: number | null; availableLocations: string; stageDimensions: string; availableResources: string }
+interface DocumentSettings { productionType: ProductionType; productionProfile: ProductionProfile; autosaveSeconds: number; revisionRetention: number }
 interface AnalysisReport { id: string; documentName: string; createdAt: string; model: string; endpoint: string; question: string; productionType?: ProductionType; analysis: string; revision: { fingerprint: string; words: number; scenes: number; characters: number } }
 const productionTypes = new Set<ProductionType>(['unspecified', 'stage', 'feature-film', 'short-film', 'television', 'audio-drama']);
+const budgetTiers = new Set<BudgetTier>(['unspecified', 'micro', 'low', 'medium', 'high']);
+const defaultProductionProfile: ProductionProfile = { targetRuntimeMinutes: null, targetAudience: '', budgetTier: 'unspecified', castSizeTarget: null, availableLocations: '', stageDimensions: '', availableResources: '' };
+const defaultDocumentSettings: DocumentSettings = { productionType: 'unspecified', productionProfile: defaultProductionProfile, autosaveSeconds: 60, revisionRetention: 20 };
 
 function productionType(value: unknown): ProductionType {
   return typeof value === 'string' && productionTypes.has(value as ProductionType) ? value as ProductionType : 'unspecified';
+}
+
+function positiveNumber(value: unknown): number | null { const number = Number(value); return Number.isFinite(number) && number > 0 ? number : null; }
+function documentSettings(value: unknown): DocumentSettings {
+  const input = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const profile = input.productionProfile && typeof input.productionProfile === 'object' ? input.productionProfile as Record<string, unknown> : {};
+  const autosaveSeconds = Number(input.autosaveSeconds); const revisionRetention = Number(input.revisionRetention);
+  return {
+    productionType: productionType(input.productionType),
+    productionProfile: {
+      targetRuntimeMinutes: positiveNumber(profile.targetRuntimeMinutes), targetAudience: typeof profile.targetAudience === 'string' ? profile.targetAudience.slice(0, 200) : '',
+      budgetTier: typeof profile.budgetTier === 'string' && budgetTiers.has(profile.budgetTier as BudgetTier) ? profile.budgetTier as BudgetTier : 'unspecified',
+      castSizeTarget: positiveNumber(profile.castSizeTarget), availableLocations: typeof profile.availableLocations === 'string' ? profile.availableLocations.slice(0, 2000) : '',
+      stageDimensions: typeof profile.stageDimensions === 'string' ? profile.stageDimensions.slice(0, 300) : '', availableResources: typeof profile.availableResources === 'string' ? profile.availableResources.slice(0, 2000) : '',
+    },
+    autosaveSeconds: [0, 30, 60, 120, 300].includes(autosaveSeconds) ? autosaveSeconds : 60,
+    revisionRetention: Math.min(100, Math.max(5, Number.isFinite(revisionRetention) ? Math.round(revisionRetention) : 20)),
+  };
 }
 
 app.use(express.json({ limit: '5mb' }));
@@ -87,12 +111,12 @@ async function writeAnalysisReports(reports: AnalysisReport[]) {
   await rename(temporaryPath, analysisReportsPath);
 }
 
-async function readDocumentSettings(): Promise<Record<string, { productionType: ProductionType }>> {
+async function readDocumentSettings(): Promise<Record<string, DocumentSettings>> {
   try { return JSON.parse(await readFile(documentSettingsPath, 'utf8')); }
   catch { return {}; }
 }
 
-async function writeDocumentSettings(settings: Record<string, { productionType: ProductionType }>) {
+async function writeDocumentSettings(settings: Record<string, DocumentSettings>) {
   await mkdir(dataDir, { recursive: true });
   const temporaryPath = `${documentSettingsPath}.${process.pid}.tmp`;
   await writeFile(temporaryPath, JSON.stringify(settings, null, 2), 'utf8');
@@ -120,14 +144,14 @@ app.put('/api/ollama/settings', async (request, response, next) => {
 app.get('/api/document-settings/:name', async (request, response, next) => {
   try {
     const name = safeFilename(request.params.name); const settings = await readDocumentSettings();
-    response.json(settings[name] || { productionType: 'unspecified' });
+    response.json(documentSettings(settings[name] || defaultDocumentSettings));
   } catch (error) { next(error); }
 });
 
 app.put('/api/document-settings/:name', async (request, response, next) => {
   try {
     const name = safeFilename(request.params.name); const settings = await readDocumentSettings();
-    settings[name] = { productionType: productionType(request.body?.productionType) };
+    settings[name] = documentSettings(request.body);
     await writeDocumentSettings(settings); response.json(settings[name]);
   } catch (error) { next(error); }
 });
@@ -190,6 +214,16 @@ app.post('/api/ollama/analyze', async (request, response, next) => {
     const canonicalCharacters: string[] = Array.isArray(grounding.characters) ? grounding.characters.filter((value: unknown): value is string => typeof value === 'string').slice(0, 250) : [];
     const canonicalScenes: string[] = Array.isArray(grounding.scenes) ? grounding.scenes.filter((value: unknown): value is string => typeof value === 'string').slice(0, 500) : [];
     const selectedProductionType = productionType(request.body?.productionType);
+    const selectedProductionProfile = documentSettings({ productionType: selectedProductionType, productionProfile: request.body?.productionProfile }).productionProfile;
+    const productionConstraints = [
+      selectedProductionProfile.targetRuntimeMinutes ? `Target runtime: ${selectedProductionProfile.targetRuntimeMinutes} minutes` : '',
+      selectedProductionProfile.targetAudience ? `Target audience: ${selectedProductionProfile.targetAudience}` : '',
+      selectedProductionProfile.budgetTier !== 'unspecified' ? `Budget tier: ${selectedProductionProfile.budgetTier}` : '',
+      selectedProductionProfile.castSizeTarget ? `Target maximum cast: ${selectedProductionProfile.castSizeTarget}` : '',
+      selectedProductionProfile.availableLocations ? `Available locations/settings: ${selectedProductionProfile.availableLocations}` : '',
+      selectedProductionProfile.stageDimensions ? `Stage dimensions/playing space: ${selectedProductionProfile.stageDimensions}` : '',
+      selectedProductionProfile.availableResources ? `Available resources/equipment/effects: ${selectedProductionProfile.availableResources}` : '',
+    ].filter(Boolean).join('\n') || '(no additional constraints supplied)';
     const productionGuidance: Record<ProductionType, string> = {
       unspecified: 'The production medium is unspecified. Avoid firm cost or logistics conclusions that depend on whether locations are physical shoots or representational sets.',
       stage: 'This is a stage production. Treat written locations as potentially representational settings achieved through reusable scenery, props, lighting, projection, sound, or actor movement. Assess set transformations, transition time, backstage space, sightlines, live effects, and performer safety; do not assume every location requires an on-site shoot or company move.',
@@ -220,6 +254,8 @@ ${canonicalScenes.length ? canonicalScenes.map((scene, index) => `${index + 1}. 
 
 PRODUCTION FORMAT: ${selectedProductionType}
 ${productionGuidance[selectedProductionType]}
+PRODUCTION CONSTRAINTS:
+${productionConstraints}
 
 Never identify someone as a character unless the name appears in the canonical character list or is explicitly named in the screenplay text. A famous real-world associate is not evidence that the person appears in this screenplay.`;
     const chunks = screenplayChunks(screenplay, canonicalScenes);
@@ -242,6 +278,7 @@ Each scene entry must include its exact heading and a concise list of events. Us
 
 CANONICAL CHARACTERS: ${canonicalCharacters.join(' | ') || '(none detected)'}
 PRODUCTION FORMAT: ${selectedProductionType}. ${productionGuidance[selectedProductionType]}
+PRODUCTION CONSTRAINTS: ${productionConstraints}
 PRIOR CONTINUITY LEDGER: ${previousLedger}
 
 --- CHUNK ${index + 1} SOURCE ---
@@ -283,6 +320,51 @@ ${chunks[index]}`;
       response.write(`${JSON.stringify({ type: 'error', message })}\n`); response.end();
     } else next(error);
   }
+});
+
+interface RevisionSnapshot { id: string; createdAt: string; fingerprint: string; words: number; size: number; content: string }
+function revisionDirectory(name: string) { return path.join(dataDir, '.revisions', encodeURIComponent(name)); }
+async function revisionSnapshots(name: string): Promise<RevisionSnapshot[]> {
+  try {
+    const directory = revisionDirectory(name); const entries = await readdir(directory, { withFileTypes: true });
+    const snapshots = await Promise.all(entries.filter((entry) => entry.isFile() && entry.name.endsWith('.json')).map(async (entry) => JSON.parse(await readFile(path.join(directory, entry.name), 'utf8')) as RevisionSnapshot));
+    return snapshots.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  } catch { return []; }
+}
+
+app.get('/api/documents/:name/revisions', async (request, response, next) => {
+  try {
+    const name = safeFilename(request.params.name); const snapshots = await revisionSnapshots(name);
+    response.json(snapshots.map(({ content: _content, ...metadata }) => metadata));
+  } catch (error) { next(error); }
+});
+
+app.get('/api/documents/:name/revisions/:id', async (request, response, next) => {
+  try {
+    const name = safeFilename(request.params.name); const id = request.params.id;
+    if (!/^[a-f0-9-]{36}$/i.test(id)) return response.status(400).json({ error: 'Invalid revision identifier.' });
+    response.json(JSON.parse(await readFile(path.join(revisionDirectory(name), `${id}.json`), 'utf8')) as RevisionSnapshot);
+  } catch (error) { next(error); }
+});
+
+app.post('/api/documents/:name/autosave', async (request, response, next) => {
+  try {
+    const name = safeFilename(request.params.name); const content = request.body?.content;
+    if (typeof content !== 'string') return response.status(400).json({ error: 'Document content must be text.' });
+    await mkdir(dataDir, { recursive: true }); const directory = revisionDirectory(name); await mkdir(directory, { recursive: true });
+    const fingerprint = createHash('sha256').update(content).digest('hex').slice(0, 12); const existing = await revisionSnapshots(name);
+    let snapshot = existing.find((item) => item.fingerprint === fingerprint);
+    if (!snapshot) {
+      snapshot = { id: randomUUID(), createdAt: new Date().toISOString(), fingerprint, words: content.trim() ? content.trim().split(/\s+/).length : 0, size: Buffer.byteLength(content), content };
+      await writeFile(path.join(directory, `${snapshot.id}.json`), JSON.stringify(snapshot), 'utf8');
+    }
+    const filePath = path.join(dataDir, name); const temporaryPath = `${filePath}.${process.pid}.tmp`;
+    await writeFile(temporaryPath, content, 'utf8'); await rename(temporaryPath, filePath);
+    const retention = Math.min(100, Math.max(5, Number(request.body?.retention) || 20));
+    const after = await revisionSnapshots(name);
+    await Promise.all(after.slice(retention).map((item) => unlink(path.join(directory, `${item.id}.json`)).catch(() => undefined)));
+    response.json({ revision: { id: snapshot.id, createdAt: snapshot.createdAt, fingerprint: snapshot.fingerprint, words: snapshot.words, size: snapshot.size }, retained: Math.min(after.length, retention) });
+  } catch (error) { next(error); }
 });
 
 app.get('/api/documents', async (_request, response, next) => {

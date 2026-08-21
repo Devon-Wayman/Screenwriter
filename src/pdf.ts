@@ -7,6 +7,12 @@ export interface PdfOptions {
   includeTitlePage: boolean;
   sceneNumbers: boolean;
   includeAnalysisReports?: boolean;
+  automaticContinuations?: boolean;
+  headerText?: string;
+  footerText?: string;
+  watermark?: string;
+  revisionColor?: string;
+  revisionMarks?: boolean;
 }
 
 export interface StyledRun { text: string; bold: boolean; italic: boolean; underline: boolean }
@@ -129,10 +135,29 @@ export function layoutScreenplay(document: FountainDocument, options: PdfOptions
     if (element.kind === 'dialogue') {
       const measured = element.lines.reduce((sum, line) => sum + wrapRuns(plainRuns(line), line.type === 'dialogue' ? 252 : 180).length * LINE_HEIGHT, 12);
       ensure(measured); y += 12;
+      const characterName = printableMarkup(element.lines[0]).replace(/\s*\(CONT'D\)\s*$/i, '');
       for (const line of element.lines) {
-        if (line.type === 'character') addBlock('character', plainRuns(line), 252, 252, 'left');
-        else if (line.type === 'parenthetical') addBlock('parenthetical', plainRuns(line), 216, 180, 'left');
-        else addBlock('dialogue', plainRuns(line), 180, 252, 'left');
+        const x = line.type === 'character' ? 252 : line.type === 'parenthetical' ? 216 : 180;
+        const blockWidth = line.type === 'dialogue' ? 252 : 180;
+        const wrapped = wrapRuns(plainRuns(line), blockWidth); let offset = 0;
+        while (offset < wrapped.length) {
+          let available = Math.floor((bottom - y) / LINE_HEIGHT);
+          if (available < 1) {
+            if (options.automaticContinuations !== false) page.blocks.push({ x: 180, y: bottom - LINE_HEIGHT, width: 252, align: 'center', lines: [[{ text: '(MORE)', bold: false, italic: false, underline: false }]], type: 'more' });
+            newPage(scriptPage++);
+            if (options.automaticContinuations !== false && line.type !== 'character') { page.blocks.push({ x: 252, y, width: 252, align: 'left', lines: [[{ text: `${characterName} (CONT'D)`, bold: false, italic: false, underline: false }]], type: 'character' }); y += LINE_HEIGHT; }
+            available = Math.floor((bottom - y) / LINE_HEIGHT);
+          }
+          const needsSplit = wrapped.length - offset > available;
+          const take = needsSplit && options.automaticContinuations !== false ? Math.max(1, available - 1) : available;
+          const part = wrapped.slice(offset, offset + take);
+          page.blocks.push({ x, y, width: blockWidth, align: 'left', lines: part, type: line.type }); y += part.length * LINE_HEIGHT; offset += part.length;
+          if (offset < wrapped.length) {
+            if (options.automaticContinuations !== false) { page.blocks.push({ x: 180, y, width: 252, align: 'center', lines: [[{ text: '(MORE)', bold: false, italic: false, underline: false }]], type: 'more' }); }
+            newPage(scriptPage++);
+            if (options.automaticContinuations !== false && line.type !== 'character') { page.blocks.push({ x: 252, y, width: 252, align: 'left', lines: [[{ text: `${characterName} (CONT'D)`, bold: false, italic: false, underline: false }]], type: 'character' }); y += LINE_HEIGHT; }
+          }
+        }
       }
       continue;
     }
@@ -166,12 +191,13 @@ function renderRunLine(pdf: jsPDF, runs: StyledRun[], x: number, y: number, widt
   }
 }
 
-function appendAnalysisReports(pdf: jsPDF, reports: AnalysisReport[], options: PdfOptions) {
+function appendAnalysisReports(pdf: jsPDF, reports: AnalysisReport[], options: PdfOptions, useCurrentPage = false) {
   const width = options.paperSize === 'letter' ? 612 : 595.28;
   const height = options.paperSize === 'letter' ? 792 : 841.89;
   const margin = 54, bottom = height - 54, bodyWidth = width - margin * 2;
-  for (const report of reports) {
-    pdf.addPage(options.paperSize, 'portrait');
+  for (let reportIndex = 0; reportIndex < reports.length; reportIndex++) {
+    const report = reports[reportIndex];
+    if (!useCurrentPage || reportIndex > 0) pdf.addPage(options.paperSize, 'portrait');
     let y = margin;
     const newReportPage = () => { pdf.addPage(options.paperSize, 'portrait'); y = margin; };
     const write = (text: string, size = 10, bold = false, gap = 5) => {
@@ -195,13 +221,20 @@ export function createScreenplayPdf(document: FountainDocument, options: PdfOpti
   pdf.setFont('courier', 'normal'); pdf.setFontSize(FONT_SIZE); pdf.setLineWidth(.5);
   layout.pages.forEach((page, pageIndex) => {
     if (pageIndex > 0) pdf.addPage(options.paperSize, 'portrait');
+    if (options.watermark) { pdf.setFont('helvetica', 'bold'); pdf.setFontSize(42); pdf.setTextColor(225, 225, 225); pdf.text(options.watermark, layout.width / 2, layout.height / 2, { align: 'center', angle: 35 }); }
+    pdf.setFont('courier', 'normal'); pdf.setFontSize(9); pdf.setTextColor(100, 100, 100);
+    if (options.headerText) pdf.text(options.headerText, 72, 42);
     if (page.number !== null && page.number > 1) pdf.text(String(page.number), layout.width - 72, 42, { align: 'right' });
+    if (options.footerText) pdf.text(options.footerText, layout.width / 2, layout.height - 35, { align: 'center' });
+    const color = options.revisionColor || '#000000'; const red = parseInt(color.slice(1, 3), 16) || 0, green = parseInt(color.slice(3, 5), 16) || 0, blue = parseInt(color.slice(5, 7), 16) || 0;
+    pdf.setTextColor(red, green, blue); pdf.setFontSize(FONT_SIZE);
     for (const block of page.blocks) {
       block.lines.forEach((line, lineIndex) => renderRunLine(pdf, line, block.x, block.y + lineIndex * LINE_HEIGHT, block.width, block.align));
       if (block.sceneNumber) {
         const y = block.y; pdf.setFont('courier', 'normal');
         pdf.text(String(block.sceneNumber), 72, y); pdf.text(String(block.sceneNumber), layout.width - 54, y, { align: 'right' });
       }
+      if (options.revisionMarks) { pdf.setFont('courier', 'bold'); pdf.text('*', layout.width - 42, block.y); }
     }
   });
   if (options.includeAnalysisReports && reports.length) appendAnalysisReports(pdf, reports, options);
@@ -212,4 +245,11 @@ export function createScreenplayPdf(document: FountainDocument, options: PdfOpti
 export function downloadScreenplayPdf(document: FountainDocument, options: PdfOptions, fountainFilename: string, reports: AnalysisReport[] = []) {
   const name = fountainFilename.replace(/\.(fountain|txt)$/i, '') || 'Screenplay';
   createScreenplayPdf(document, options, reports).save(`${name}.pdf`);
+}
+
+export function downloadAnalysisReportsPdf(reports: AnalysisReport[], options: Pick<PdfOptions, 'paperSize'>, fountainFilename: string) {
+  if (!reports.length) return;
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: options.paperSize });
+  appendAnalysisReports(pdf, reports, { paperSize: options.paperSize, includeTitlePage: false, sceneNumbers: false }, true);
+  const name = fountainFilename.replace(/\.(fountain|txt)$/i, '') || 'Screenplay'; pdf.save(`${name}-analysis-reports.pdf`);
 }

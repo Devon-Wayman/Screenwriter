@@ -56,4 +56,13 @@ describe('screenplay PDF layout', () => {
     const pdf = createScreenplayPdf(document, { ...options, includeTitlePage: false, includeAnalysisReports: true }, [report]);
     expect(pdf.getNumberOfPages()).toBe(2);
   });
+
+  it('adds dialogue continuation markers when a speech crosses a page', () => {
+    const speech = Array.from({ length: 900 }, () => 'word').join(' ');
+    const layout = layoutScreenplay(parseFountain(`INT. ROOM - DAY\n\nMARA\n${speech}`), { ...options, includeTitlePage: false, automaticContinuations: true });
+    const printed = layout.pages.flatMap((page) => page.blocks.flatMap((block) => block.lines.flatMap((line) => line.map((run) => run.text).join(''))));
+    expect(layout.pages.length).toBeGreaterThan(1);
+    expect(printed).toContain('(MORE)');
+    expect(printed.some((line) => line.includes("MARA (CONT'D)"))).toBe(true);
+  });
 });

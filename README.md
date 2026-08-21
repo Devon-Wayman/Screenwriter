@@ -38,6 +38,7 @@ Screenplays remain ordinary `.fountain` text files. There is no proprietary proj
 - Persistent revision reports identified by screenplay fingerprint, model, and analysis date
 - Scene-boundary chunk analysis with compact evidence summaries and a rolling continuity ledger
 - Per-screenplay production formats for stage, feature film, short film, television, and audio drama
+- Production constraints for runtime, audience, budget, cast, available locations, stage dimensions, equipment, and effects
 
 ### Files and output
 
@@ -47,6 +48,8 @@ Screenplays remain ordinary `.fountain` text files. There is no proprietary proj
 - Fountain source downloads
 - Selectable-text screenplay PDFs
 - Optional analysis reports appended to screenplay PDFs for revision comparison
+- Selectable and separately exportable analysis reports
+- Automatic `(MORE)` and `(CONT'D)`, revision colors and marks, headers, footers, and watermarks
 - US Letter and A4 PDF output
 - Title pages, pagination, inline emphasis, dual-dialogue columns, and optional scene numbers
 
@@ -233,14 +236,21 @@ The Docker mount at `/data` is the source of truth for saved screenplays. Import
 
 Include the host screenplay directory in NAS snapshots and off-device backups. A NAS copy alone is not protection against disk failure, accidental deletion, or hardware loss.
 
+## Autosave and recovery
+
+Screenwriter autosaves edited documents every 60 seconds by default. The interval can be changed or disabled under **File → Revision history**. Each autosave writes the current Fountain file atomically and stores a content-addressed recovery snapshot beneath `/data/.revisions`. Identical content is not duplicated.
+
+The default retention is 20 snapshots per screenplay and can be configured from 5 to 100. Loading a historical snapshot changes only the editor and marks the document as modified; it does not overwrite the current NAS file until **Save** is explicitly used. This provides a safe opportunity to review or export an older draft first.
+
 ## Current limitations
 
 - No built-in authentication or multi-user permissions
 - No offline synchronization or automatic recovery snapshots yet
 - No real-time collaborative editing
 - No Final Draft `.fdx` import/export
-- PDF output does not yet provide locked pages, revision colors, or automatic `(MORE)`/`CONT'D`
-- Undo history is limited to the active browser session
+- Page locking across major production revisions is not yet supported
+- Fine-grained per-line revision tracking is not yet available; PDF revision colors and marks apply to the exported draft
+- Undo history is limited to the active browser session, while autosave recovery snapshots persist on the NAS
 
 ## Theme attributions
 
