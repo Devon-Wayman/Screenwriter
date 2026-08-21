@@ -5,3 +5,7 @@ export interface CharacterStats { name: string; dialogueLines: number; dialogueW
 export interface Diagnostic { line: number; start: number; length: number; message: string; replacement: string }
 export interface FountainDocument { lines: FountainLine[]; characters: CharacterStats[]; diagnostics: Diagnostic[]; sceneCount: number; wordCount: number; titlePage: Record<string, string> }
 export interface DocumentInfo { name: string; updatedAt: string; size: number }
+export interface OllamaModel { name: string; size?: number; modified_at?: string }
+export interface OllamaStatus { connected: boolean; endpoint: string; models: OllamaModel[]; settings: { endpoint: string; model: string } }
+export type ProductionType = 'unspecified' | 'stage' | 'feature-film' | 'short-film' | 'television' | 'audio-drama';
+export interface AnalysisReport { id: string; documentName: string; createdAt: string; model: string; endpoint: string; question: string; productionType?: ProductionType; analysis: string; revision: { fingerprint: string; words: number; scenes: number; characters: number } }

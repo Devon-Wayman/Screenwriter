@@ -1,11 +1,12 @@
 import { jsPDF } from 'jspdf';
 import { printableMarkup } from './fountain';
-import type { FountainDocument, FountainLine } from './types';
+import type { AnalysisReport, FountainDocument, FountainLine } from './types';
 
 export interface PdfOptions {
   paperSize: 'letter' | 'a4';
   includeTitlePage: boolean;
   sceneNumbers: boolean;
+  includeAnalysisReports?: boolean;
 }
 
 export interface StyledRun { text: string; bold: boolean; italic: boolean; underline: boolean }
@@ -165,7 +166,30 @@ function renderRunLine(pdf: jsPDF, runs: StyledRun[], x: number, y: number, widt
   }
 }
 
-export function createScreenplayPdf(document: FountainDocument, options: PdfOptions) {
+function appendAnalysisReports(pdf: jsPDF, reports: AnalysisReport[], options: PdfOptions) {
+  const width = options.paperSize === 'letter' ? 612 : 595.28;
+  const height = options.paperSize === 'letter' ? 792 : 841.89;
+  const margin = 54, bottom = height - 54, bodyWidth = width - margin * 2;
+  for (const report of reports) {
+    pdf.addPage(options.paperSize, 'portrait');
+    let y = margin;
+    const newReportPage = () => { pdf.addPage(options.paperSize, 'portrait'); y = margin; };
+    const write = (text: string, size = 10, bold = false, gap = 5) => {
+      pdf.setFont('helvetica', bold ? 'bold' : 'normal'); pdf.setFontSize(size);
+      const lines = pdf.splitTextToSize(text, bodyWidth) as string[];
+      const lineHeight = size * 1.35;
+      for (const line of lines) { if (y + lineHeight > bottom) newReportPage(); pdf.text(line, margin, y); y += lineHeight; }
+      y += gap;
+    };
+    write('SCREENWRITER ANALYSIS REPORT', 15, true, 12);
+    write(`Revision ${report.revision.fingerprint} · ${new Date(report.createdAt).toLocaleString()} · ${report.model}${report.productionType ? ` · ${report.productionType}` : ''}`, 9, false, 3);
+    write(`${report.revision.words} words · ${report.revision.scenes} scenes · ${report.revision.characters} characters`, 9, false, 12);
+    write('Question', 11, true, 4); write(report.question, 10, false, 10);
+    write('Analysis', 11, true, 4); write(report.analysis, 10, false, 0);
+  }
+}
+
+export function createScreenplayPdf(document: FountainDocument, options: PdfOptions, reports: AnalysisReport[] = []) {
   const layout = layoutScreenplay(document, options);
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: options.paperSize });
   pdf.setFont('courier', 'normal'); pdf.setFontSize(FONT_SIZE); pdf.setLineWidth(.5);
@@ -180,11 +204,12 @@ export function createScreenplayPdf(document: FountainDocument, options: PdfOpti
       }
     }
   });
+  if (options.includeAnalysisReports && reports.length) appendAnalysisReports(pdf, reports, options);
   pdf.setProperties({ title: document.titlePage.title || 'Screenplay', author: document.titlePage.author || document.titlePage.authors || '', subject: 'Screenplay exported from Screenwriter' });
   return pdf;
 }
 
-export function downloadScreenplayPdf(document: FountainDocument, options: PdfOptions, fountainFilename: string) {
+export function downloadScreenplayPdf(document: FountainDocument, options: PdfOptions, fountainFilename: string, reports: AnalysisReport[] = []) {
   const name = fountainFilename.replace(/\.(fountain|txt)$/i, '') || 'Screenplay';
-  createScreenplayPdf(document, options).save(`${name}.pdf`);
+  createScreenplayPdf(document, options, reports).save(`${name}.pdf`);
 }

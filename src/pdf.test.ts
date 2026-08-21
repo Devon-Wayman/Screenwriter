@@ -49,4 +49,11 @@ describe('screenplay PDF layout', () => {
     expect(bytes.byteLength).toBeGreaterThan(1000);
     expect(layoutScreenplay(document, options).pages[1].blocks.find((block) => block.type === 'scene')?.sceneNumber).toBe('12A');
   });
+
+  it('appends revision-stamped analysis reports when requested', () => {
+    const document = parseFountain('INT. ROOM - DAY\n\nMARA\nHello.');
+    const report = { id: 'report-1', documentName: 'Test.fountain', createdAt: '2026-08-20T12:00:00.000Z', model: 'test-model', endpoint: 'http://ollama:11434', question: 'Rate it.', analysis: 'A concise production report.', revision: { fingerprint: 'abc123def456', words: 4, scenes: 1, characters: 1 } };
+    const pdf = createScreenplayPdf(document, { ...options, includeTitlePage: false, includeAnalysisReports: true }, [report]);
+    expect(pdf.getNumberOfPages()).toBe(2);
+  });
 });

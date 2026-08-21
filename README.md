@@ -31,6 +31,13 @@ Screenplays remain ordinary `.fountain` text files. There is no proprietary proj
 - Dialogue totals by character
 - Character scene counts and estimated speaking time
 - Estimated screenplay runtime
+- Optional Ollama screenplay critique with automatic NAS discovery
+- Saved custom Ollama endpoint and model selection for Tailscale fallbacks
+- Consistent evidence-based reports covering structure, characters, dialogue, pacing, continuity, themes, production feasibility, and priority revisions
+- Unofficial MPAA-style content-rating estimate with category-specific reasoning
+- Persistent revision reports identified by screenplay fingerprint, model, and analysis date
+- Scene-boundary chunk analysis with compact evidence summaries and a rolling continuity ledger
+- Per-screenplay production formats for stage, feature film, short film, television, and audio drama
 
 ### Files and output
 
@@ -39,6 +46,7 @@ Screenplays remain ordinary `.fountain` text files. There is no proprietary proj
 - Safe import that preserves an existing same-named NAS file
 - Fountain source downloads
 - Selectable-text screenplay PDFs
+- Optional analysis reports appended to screenplay PDFs for revision comparison
 - US Letter and A4 PDF output
 - Title pages, pagination, inline emphasis, dual-dialogue columns, and optional scene numbers
 
@@ -111,6 +119,33 @@ The container uses these environment variables:
 | `PORT` | `3000` | HTTP port inside the container |
 | `SCREENWRITER_DATA_DIR` | `/data` | Persistent Fountain storage location |
 | `APP_VERSION` | Docker build argument | Version reported by `/api/health` |
+| `OLLAMA_URLS` | empty | Optional comma-separated Ollama endpoints checked before automatic discovery |
+
+## Ollama screenplay analysis
+
+Open the **AI** tab in the analysis sidebar. Screenwriter checks, in order:
+
+1. Addresses supplied through `OLLAMA_URLS`
+2. `http://ollama:11434` for a container reachable by that name
+3. `http://host.docker.internal:11434` for an Ollama port published by the NAS
+4. The custom fallback saved through **AI → Settings**
+
+The endpoint and preferred model are stored in `/data/ollama-settings.json`, alongside the persistent screenplay volume. Screenwriter communicates with Ollama from its Express server, so endpoint access and screenplay contents do not pass through the browser.
+
+Long screenplays are analyzed sequentially in scene-boundary chunks. Each chunk produces a compact evidence record and continuity state using an 8K context; a final 16K synthesis combines those records into the saved report. This lowers peak inference memory compared with sending an entire feature screenplay through one large context. It takes more total inference time, but requests are deliberately sequential so they do not compete for memory. Character cues and scene headings from the Fountain parser ground every stage.
+
+During analysis, the server streams newline-delimited progress events to the browser. The AI panel reports the active chunk, completed and remaining chunk counts, final synthesis, failures, and report completion. Proxy buffering is disabled for this response so progress can pass through a typical NAS reverse proxy promptly.
+
+Choose a production format in the AI panel before analysis. The selection persists in `/data/document-settings.json`, appears in revision reports, and changes the production guidance supplied to every chunk. Stage reports treat written locations as potentially reusable or representational scenery, props, lighting, projection, and sound rather than assuming separate filming locations. Film and television reports instead consider physical locations, sets, permits, company moves, coverage, and shooting logistics.
+
+For separate CasaOS apps, make sure Ollama publishes port `11434` to the NAS. The Compose configuration maps `host.docker.internal` to the Linux Docker host gateway. Alternatively, place both containers on a shared Docker network and set:
+
+```yaml
+environment:
+  OLLAMA_URLS: http://ollama:11434
+```
+
+For a Tailscale-connected laptop, enter `http://100.x.y.z:11434` in AI settings. Ollama on that laptop must listen on the Tailscale interface rather than localhost, and its firewall and Tailnet ACL must permit the NAS to reach TCP port `11434`. Do not expose Ollama directly to the public internet.
 
 ## CasaOS and remote access
 

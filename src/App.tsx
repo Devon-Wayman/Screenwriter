@@ -4,7 +4,7 @@ import { downloadScreenplayPdf, layoutScreenplay, type PdfOptions } from './pdf'
 import { smartKeyEdit } from './editing';
 import { UndoHistory, type HistoryEntry } from './history';
 import HelpModal from './HelpModal';
-import type { Diagnostic, DocumentInfo, LineType } from './types';
+import type { AnalysisReport, Diagnostic, DocumentInfo, LineType, OllamaStatus, ProductionType } from './types';
 
 const sample = `Title: The Glass Harbor
 Credit: Written by
@@ -35,6 +35,7 @@ Jonah, don't touch it.
 const themes = ['paper', 'warm', 'contrast', 'midnight', 'one-dark-darker', 'visual-studio-dark', 'visual-studio-light', 'powershell-ise'] as const;
 type Theme = typeof themes[number];
 const themeLabels: Record<Theme, string> = { paper:'Paper', warm:'Warm', contrast:'Contrast', midnight:'Midnight', 'one-dark-darker':'One Dark Darker', 'visual-studio-dark':'Visual Studio Dark', 'visual-studio-light':'Visual Studio Light', 'powershell-ise':'PowerShell ISE' };
+const productionLabels: Record<ProductionType, string> = { unspecified:'Not specified', stage:'Stage play', 'feature-film':'Feature film', 'short-film':'Short film', television:'Television', 'audio-drama':'Audio drama' };
 type SyntaxPalette = Record<LineType, string>;
 interface SavedSyntaxTheme { name: string; colors: SyntaxPalette }
 
@@ -78,7 +79,7 @@ export default function App() {
   const [status, setStatus] = useState('Ready');
   const [saving, setSaving] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [activePanel, setActivePanel] = useState<'characters' | 'corrections'>('characters');
+  const [activePanel, setActivePanel] = useState<'characters' | 'corrections' | 'ai'>('characters');
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('screenwriter-theme') as Theme) || 'paper');
   const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem('screenwriter-font-size')) || 16);
   const [customSyntaxThemes, setCustomSyntaxThemes] = useState<SavedSyntaxTheme[]>(loadSyntaxThemes);
@@ -87,12 +88,21 @@ export default function App() {
   const [draftSyntaxName, setDraftSyntaxName] = useState('My screenplay theme');
   const [draftSyntaxColors, setDraftSyntaxColors] = useState<SyntaxPalette>(builtInSyntaxThemes['Screenwriter Classic']);
   const [pdfOpen, setPdfOpen] = useState(false);
-  const [pdfOptions, setPdfOptions] = useState<PdfOptions>({ paperSize: 'letter', includeTitlePage: true, sceneNumbers: false });
+  const [pdfOptions, setPdfOptions] = useState<PdfOptions>({ paperSize: 'letter', includeTitlePage: true, sceneNumbers: false, includeAnalysisReports: false });
   const [focusMode, setFocusMode] = useState(false);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [helpOpen, setHelpOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [findText, setFindText] = useState('');
+  const [ollama, setOllama] = useState<OllamaStatus | null>(null);
+  const [ollamaSettingsOpen, setOllamaSettingsOpen] = useState(false);
+  const [ollamaEndpoint, setOllamaEndpoint] = useState('');
+  const [ollamaModel, setOllamaModel] = useState('');
+  const [aiAnalysis, setAiAnalysis] = useState('');
+  const [analysisReports, setAnalysisReports] = useState<AnalysisReport[]>([]);
+  const [productionType, setProductionType] = useState<ProductionType>('unspecified');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState<{ stage: 'chunks' | 'synthesis' | 'complete' | 'error'; completed: number; total: number; active?: number; message: string } | null>(null);
   const editor = useRef<HTMLTextAreaElement>(null);
   const highlightLayer = useRef<HTMLPreElement>(null);
   const filePicker = useRef<HTMLInputElement>(null);
@@ -110,6 +120,7 @@ export default function App() {
     catch (error) { setStatus(error instanceof Error ? error.message : 'Could not load files'); }
   };
   useEffect(() => { refreshDocuments(); }, []);
+  useEffect(() => { void refreshOllama(); }, []);
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('screenwriter-theme', theme); }, [theme]);
   useEffect(() => {
     const linked: Record<Theme, string> = { paper:'Screenwriter Classic', warm:'Soft Focus', contrast:'High Contrast', midnight:'Midnight Ink', 'one-dark-darker':'One Dark Darker', 'visual-studio-dark':'Visual Studio Dark', 'visual-studio-light':'Visual Studio Light', 'powershell-ise':'PowerShell ISE' };
@@ -172,6 +183,7 @@ export default function App() {
     setSaving(true); setStatus('Saving…');
     try {
       await api(`/api/documents/${encodeURIComponent(safeName)}`, { method: 'PUT', body: JSON.stringify({ content }) });
+      await api(`/api/document-settings/${encodeURIComponent(safeName)}`, { method: 'PUT', body: JSON.stringify({ productionType }) });
       setFilename(safeName); savedContent.current = content; setDirty(false); setStatus('Saved on NAS'); await refreshDocuments();
     } catch (error) { setStatus(error instanceof Error ? error.message : 'Save failed'); }
     finally { setSaving(false); }
@@ -182,12 +194,13 @@ export default function App() {
     try {
       const document = await api<{ name: string; content: string }>(`/api/documents/${encodeURIComponent(name)}`);
       setContent(document.content); setFilename(document.name); resetHistory(document.content); setDirty(false); setStatus(`Opened ${document.name}`);
+      void loadAnalysisReports(document.name); void loadDocumentSettings(document.name);
     } catch (error) { setStatus(error instanceof Error ? error.message : 'Open failed'); }
   }
 
   function newDocument() {
     if (dirty && !confirm('Discard your unsaved changes?')) return;
-    setContent(''); setFilename('Untitled.fountain'); resetHistory(''); setDirty(false); setStatus('New screenplay'); editor.current?.focus();
+    setContent(''); setFilename('Untitled.fountain'); resetHistory(''); setAnalysisReports([]); setAiAnalysis(''); setProductionType('unspecified'); setDirty(false); setStatus('New screenplay'); editor.current?.focus();
   }
 
   function jumpTo(position: number, length = 0) {
@@ -224,6 +237,75 @@ export default function App() {
     setSyntaxTheme('Screenwriter Classic'); setSyntaxEditorOpen(false); setStatus('Deleted local color theme');
   }
 
+  async function refreshOllama() {
+    try {
+      const next = await api<OllamaStatus>('/api/ollama/status');
+      setOllama(next); setOllamaEndpoint(next.settings.endpoint || next.endpoint || '');
+      setOllamaModel(next.settings.model || next.models[0]?.name || '');
+    } catch { setOllama(null); }
+  }
+
+  async function loadAnalysisReports(name: string) {
+    try { setAnalysisReports(await api<AnalysisReport[]>(`/api/ollama/reports/${encodeURIComponent(name)}`)); }
+    catch { setAnalysisReports([]); }
+  }
+
+  async function loadDocumentSettings(name: string) {
+    try { const settings = await api<{ productionType: ProductionType }>(`/api/document-settings/${encodeURIComponent(name)}`); setProductionType(settings.productionType); }
+    catch { setProductionType('unspecified'); }
+  }
+
+  async function saveProductionType(next: ProductionType) {
+    setProductionType(next);
+    try {
+      await api(`/api/document-settings/${encodeURIComponent(filename)}`, { method: 'PUT', body: JSON.stringify({ productionType: next }) });
+      setStatus(`Production format saved as ${productionLabels[next]}`);
+    } catch (error) { setStatus(error instanceof Error ? error.message : 'Could not save production format'); }
+  }
+
+  async function saveOllamaSettings() {
+    try {
+      const next = await api<OllamaStatus>('/api/ollama/settings', { method: 'PUT', body: JSON.stringify({ endpoint: ollamaEndpoint, model: ollamaModel }) });
+      setOllama(next); setOllamaModel(next.settings.model || next.models[0]?.name || ollamaModel);
+      setStatus(next.connected ? `Connected to Ollama at ${next.endpoint}` : 'Saved endpoint, but Ollama could not be reached');
+      if (next.connected) setOllamaSettingsOpen(false);
+    } catch (error) { setStatus(error instanceof Error ? error.message : 'Could not save Ollama settings'); }
+  }
+
+  async function analyzeScreenplay() {
+    setAnalyzing(true); setAnalysisProgress({ stage: 'chunks', completed: 0, total: 0, message: 'Preparing screenplay chunks…' }); setStatus(`Ollama is preparing the screenplay for ${ollamaModel}…`);
+    try {
+      const response = await fetch('/api/ollama/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ screenplay: content, documentName: filename, model: ollamaModel, productionType, grounding: { characters: parsed.characters.map((character) => character.name), scenes: parsed.lines.filter((line) => line.type === 'scene').map((line) => line.text) }, revision: { words: parsed.wordCount, scenes: parsed.sceneCount, characters: parsed.characters.length } }) });
+      if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.error || `Analysis request failed (${response.status}).`); }
+      if (!response.body) throw new Error('The server did not provide an analysis progress stream.');
+      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
+      type CompletedAnalysis = { analysis: string; model: string; endpoint: string; report: AnalysisReport; chunksAnalyzed: number };
+      const completedResult: { value: CompletedAnalysis | null } = { value: null };
+      const receive = (line: string) => {
+        if (!line.trim()) return;
+        const event = JSON.parse(line) as { type: string; stage?: 'chunks' | 'synthesis' | 'complete'; completed?: number; total?: number; active?: number; message?: string; analysis?: string; model?: string; endpoint?: string; report?: AnalysisReport; chunksAnalyzed?: number };
+        if (event.type === 'error') throw new Error(event.message || 'Analysis failed.');
+        if (event.type === 'progress') {
+          const progress = { stage: event.stage || 'chunks', completed: event.completed || 0, total: event.total || 0, active: event.active, message: event.message || 'Analyzing…' };
+          setAnalysisProgress(progress); setStatus(progress.message);
+        }
+        if (event.type === 'complete' && event.report && event.analysis && event.model && event.endpoint) {
+          completedResult.value = { analysis: event.analysis, model: event.model, endpoint: event.endpoint, report: event.report, chunksAnalyzed: event.chunksAnalyzed || event.total || 0 };
+          setAnalysisProgress({ stage: 'complete', completed: event.total || 0, total: event.total || 0, message: event.message || 'Final report saved.' });
+        }
+      };
+      while (true) {
+        const { value, done } = await reader.read(); buffer += decoder.decode(value, { stream: !done });
+        const lines = buffer.split('\n'); buffer = lines.pop() || ''; lines.forEach(receive);
+        if (done) { if (buffer.trim()) receive(buffer); break; }
+      }
+      const result = completedResult.value;
+      if (!result) throw new Error('Analysis ended before the final report was returned.');
+      setAiAnalysis(result.analysis); setAnalysisReports((reports) => [result.report, ...reports]); setStatus(`Saved ${result.chunksAnalyzed}-chunk revision report from ${result.model}`);
+    } catch (error) { const message = error instanceof Error ? error.message : 'Analysis failed'; setAnalysisProgress((progress) => ({ stage: 'error', completed: progress?.completed || 0, total: progress?.total || 0, message })); setStatus(message); }
+    finally { setAnalyzing(false); }
+  }
+
   function exportFountain() {
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = filename; link.click(); URL.revokeObjectURL(link.href);
@@ -251,7 +333,7 @@ export default function App() {
       const importedContent = await file.text();
       const importedName = availableImportName(file.name);
       await api(`/api/documents/${encodeURIComponent(importedName)}`, { method: 'PUT', body: JSON.stringify({ content: importedContent }) });
-      setContent(importedContent); setFilename(importedName); resetHistory(importedContent); setDirty(false);
+      setContent(importedContent); setFilename(importedName); resetHistory(importedContent); setAnalysisReports([]); setAiAnalysis(''); setProductionType('unspecified'); setDirty(false);
       setStatus(importedName === file.name ? `Imported and backed up ${importedName} on the NAS` : `Imported as ${importedName}; the existing NAS file was preserved`);
       await refreshDocuments();
     } catch (error) { setStatus(error instanceof Error ? error.message : 'Import failed'); }
@@ -263,7 +345,7 @@ export default function App() {
       <button className="brand" onClick={() => setSidebarOpen(!sidebarOpen)} aria-label="Toggle files"><span className="brand-mark">S</span><span>Screenwriter</span></button>
       <div className="document-name"><input value={filename} onChange={(event) => { setFilename(event.target.value); setDirty(true); }} aria-label="Document filename" /><span>{dirty ? 'Unsaved changes' : 'All changes saved'}</span></div>
       <nav className="actions">
-        <details className="file-menu"><summary>File</summary><div><button onClick={newDocument}>New screenplay</button><button onClick={() => filePicker.current?.click()}>Open / Import Fountain…</button><button onClick={() => setPdfOpen(true)}>Export PDF…</button><button onClick={exportFountain}>Export Fountain…</button></div></details>
+        <details className="file-menu"><summary>File</summary><div><button onClick={newDocument}>New screenplay</button><button onClick={() => filePicker.current?.click()}>Open / Import Fountain…</button><button onClick={() => setPdfOpen(true)}>Export PDF…</button><button onClick={exportFountain}>Export Fountain…</button><button onClick={() => { void refreshOllama(); setOllamaSettingsOpen(true); }}>Ollama settings…</button></div></details>
         <input ref={filePicker} className="visually-hidden" type="file" accept=".fountain,.txt,text/plain" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFountain(file); }} />
         <button onClick={undo} disabled={!canUndo} title="Undo (Ctrl/⌘+Z)">Undo</button><button onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y or Ctrl/⌘+Shift+Z)">Redo</button><button onClick={() => setFindOpen(!findOpen)}>Find</button>
         <button onClick={() => setFocusMode(true)} title="Focus Mode (Ctrl/⌘+Shift+F)">Focus</button>
@@ -291,18 +373,23 @@ export default function App() {
       </section>
       <aside className="analysis-panel">
         <div className="analysis-summary"><small>LIVE ANALYSIS</small><h2>Your screenplay at a glance</h2><div className="metrics"><div><strong>{parsed.sceneCount}</strong><span>Scenes</span></div><div><strong>{parsed.characters.length}</strong><span>Characters</span></div><div><strong>{parsed.wordCount}</strong><span>Words</span></div><div><strong>{estimatedRuntime(parsed)}</strong><span>Runtime</span></div></div></div>
-        <div className="tabs"><button className={activePanel === 'characters' ? 'active' : ''} onClick={() => setActivePanel('characters')}>Characters</button><button className={activePanel === 'corrections' ? 'active' : ''} onClick={() => setActivePanel('corrections')}>Corrections <b>{parsed.diagnostics.length}</b></button></div>
+        <div className="tabs"><button className={activePanel === 'characters' ? 'active' : ''} onClick={() => setActivePanel('characters')}>Characters</button><button className={activePanel === 'corrections' ? 'active' : ''} onClick={() => setActivePanel('corrections')}>Corrections <b>{parsed.diagnostics.length}</b></button><button className={activePanel === 'ai' ? 'active' : ''} onClick={() => setActivePanel('ai')}>AI</button></div>
         <div className="analysis-content">{activePanel === 'characters' ? <>
           {parsed.characters.length === 0 && <p className="empty">Character cues and dialogue will appear here as you write.</p>}
           {parsed.characters.map((character) => <article className="character" key={character.name}><div className="avatar">{character.name.slice(0, 2)}</div><div><h3>{character.name}</h3><p>{character.dialogueLines} lines · {character.dialogueWords} words · {character.sceneCount} scenes</p></div><time>{duration(character.estimatedSeconds)}</time></article>)}
-        </> : <>
+        </> : activePanel === 'corrections' ? <>
           {parsed.diagnostics.length === 0 && <div className="clean"><span>✓</span><h3>Looking good</h3><p>No Fountain corrections found.</p></div>}
           {parsed.diagnostics.map((diagnostic, index) => <article className="correction" key={`${diagnostic.start}-${index}`}><button onClick={() => jumpTo(diagnostic.start, diagnostic.length)}><strong>Line {diagnostic.line + 1}</strong><span>{diagnostic.message}</span></button><button className="fix" onClick={() => applyFix(diagnostic)}>Apply fix</button></article>)}
-        </>}</div>
+        </> : <div className="ai-panel">
+          <div className={`ollama-state ${ollama?.connected ? 'connected' : ''}`}><span>●</span><div><strong>{ollama?.connected ? 'Ollama connected' : 'Ollama unavailable'}</strong><small>{ollama?.connected ? ollama.endpoint : 'Configure a NAS or Tailscale endpoint'}</small></div><button onClick={() => { void refreshOllama(); setOllamaSettingsOpen(true); }}>Settings</button></div>
+          {ollama?.connected && <><label>Model<select value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)}>{ollama.models.map((model) => <option key={model.name}>{model.name}</option>)}</select></label><label>Production format<select value={productionType} disabled={analyzing} onChange={(event) => void saveProductionType(event.target.value as ProductionType)}>{(Object.keys(productionLabels) as ProductionType[]).map((value) => <option key={value} value={value}>{productionLabels[value]}</option>)}</select></label><p className="analysis-scope">The standard report covers story, characters, dialogue, pacing, continuity, production feasibility, revisions, and an unofficial MPAA-style content rating.</p><button className="primary ai-run" disabled={analyzing || !content.trim()} onClick={() => void analyzeScreenplay()}>{analyzing ? 'Analyzing…' : 'Analyze screenplay'}</button>{analysisProgress && <div className={`analysis-progress ${analysisProgress.stage}`}><div><strong>{analysisProgress.stage === 'chunks' ? `${analysisProgress.completed} of ${analysisProgress.total || '…'} chunks complete` : analysisProgress.stage === 'synthesis' ? 'Building final report' : analysisProgress.stage === 'complete' ? 'Analysis complete' : 'Analysis stopped'}</strong><span>{analysisProgress.message}</span></div><progress max="100" value={analysisProgress.stage === 'complete' ? 100 : analysisProgress.stage === 'synthesis' ? 92 : analysisProgress.total ? Math.round(analysisProgress.completed / analysisProgress.total * 85) : 2} /><small>{analysisProgress.stage === 'chunks' && analysisProgress.total ? `${analysisProgress.total - analysisProgress.completed} chunks remaining` : analysisProgress.stage === 'synthesis' ? 'All chunks passed; Ollama is composing the report.' : analysisProgress.stage === 'complete' ? 'The revision report has been saved.' : analysisProgress.message}</small></div>}</>}
+          {analysisReports.length > 0 && <div className="report-history"><h3>Revision reports <b>{analysisReports.length}</b></h3>{analysisReports.map((report, index) => <details className="ai-result" key={report.id} open={index === 0 && report.analysis === aiAnalysis}><summary><strong>{new Date(report.createdAt).toLocaleString()}</strong><span>Revision {report.revision.fingerprint} · {report.model}{report.productionType ? ` · ${productionLabels[report.productionType]}` : ''}</span><small>{report.question}</small></summary><pre>{report.analysis}</pre></details>)}</div>}
+        </div>}</div>
       </aside>
     </main>
     {focusMode && <button className="focus-exit" onClick={() => setFocusMode(false)}><span>Focus Mode</span> Exit <kbd>Esc</kbd></button>}
     {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+    {ollamaSettingsOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setOllamaSettingsOpen(false); }}><section className="ollama-dialog" role="dialog" aria-modal="true" aria-labelledby="ollama-title"><header><div><small>LOCAL AI</small><h2 id="ollama-title">Ollama connection</h2><p>Screenwriter checks the NAS automatically, then this fallback endpoint.</p></div><button onClick={() => setOllamaSettingsOpen(false)} aria-label="Close">×</button></header><label>Custom endpoint<input value={ollamaEndpoint} onChange={(event) => setOllamaEndpoint(event.target.value)} placeholder="http://100.x.y.z:11434" /></label><label>Preferred model<input value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} placeholder="qwen3.5:4b" /></label><p className="endpoint-note">For a laptop endpoint, Ollama must listen beyond localhost and its firewall must allow port 11434 over Tailscale.</p><footer><button onClick={() => setOllamaSettingsOpen(false)}>Cancel</button><button className="primary" onClick={() => void saveOllamaSettings()}>Save and test</button></footer></section></div>}
     {syntaxEditorOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSyntaxEditorOpen(false); }}><section className="theme-editor" role="dialog" aria-modal="true" aria-labelledby="theme-editor-title">
       <div className="theme-editor-heading"><div><small>SYNTAX COLORS</small><h2 id="theme-editor-title">Create a color theme</h2><p>Customize how Fountain elements appear. Themes are saved in this browser.</p></div><button onClick={() => setSyntaxEditorOpen(false)} aria-label="Close">×</button></div>
       <label className="theme-name">Theme name<input value={draftSyntaxName} onChange={(event) => setDraftSyntaxName(event.target.value)} /></label>
@@ -316,7 +403,8 @@ export default function App() {
         <label>Paper size<select value={pdfOptions.paperSize} onChange={(event) => setPdfOptions({ ...pdfOptions, paperSize: event.target.value as PdfOptions['paperSize'] })}><option value="letter">US Letter</option><option value="a4">A4</option></select></label>
         <label className="check-option"><input type="checkbox" checked={pdfOptions.includeTitlePage} disabled={!Object.keys(parsed.titlePage).length} onChange={(event) => setPdfOptions({ ...pdfOptions, includeTitlePage: event.target.checked })} /><span><strong>Title page</strong><small>{Object.keys(parsed.titlePage).length ? 'Use Fountain title metadata' : 'No title metadata found'}</small></span></label>
         <label className="check-option"><input type="checkbox" checked={pdfOptions.sceneNumbers} onChange={(event) => setPdfOptions({ ...pdfOptions, sceneNumbers: event.target.checked })} /><span><strong>Scene numbers</strong><small>Print on both page margins</small></span></label>
-        <div className="pdf-facts"><span><strong>{pdfLayout.pages.length}</strong> pages</span><span><strong>{parsed.sceneCount}</strong> scenes</span><span><strong>{parsed.wordCount}</strong> words</span></div>
+        <label className="check-option"><input type="checkbox" checked={Boolean(pdfOptions.includeAnalysisReports)} disabled={!analysisReports.length} onChange={(event) => setPdfOptions({ ...pdfOptions, includeAnalysisReports: event.target.checked })} /><span><strong>Analysis reports</strong><small>{analysisReports.length ? `Append ${analysisReports.length} saved revision report${analysisReports.length === 1 ? '' : 's'}` : 'No saved reports for this screenplay'}</small></span></label>
+        <div className="pdf-facts"><span><strong>{pdfLayout.pages.length}</strong> screenplay pages</span><span><strong>{parsed.sceneCount}</strong> scenes</span><span><strong>{parsed.wordCount}</strong> words</span>{pdfOptions.includeAnalysisReports && <span><strong>{analysisReports.length}</strong> appended reports</span>}</div>
         <p className="pdf-note">PDF text uses embedded standard Courier metrics and remains selectable.</p>
       </aside><div className="pdf-preview">{pdfLayout.pages.slice(0, 3).map((page, index) => <div className="pdf-page" key={index} style={{ aspectRatio: `${pdfLayout.width}/${pdfLayout.height}` }}>
         {page.number !== null && page.number > 1 && <span className="preview-page-number">{page.number}</span>}
@@ -324,7 +412,7 @@ export default function App() {
           {block.sceneNumber && <i className="preview-scene-number">{block.sceneNumber}</i>}{block.lines.map((line, lineIndex) => <div key={lineIndex}>{line.map((run, runIndex) => <span key={runIndex} style={{ fontWeight: run.bold ? 700 : 400, fontStyle: run.italic ? 'italic' : 'normal', textDecoration: run.underline ? 'underline' : 'none' }}>{run.text}</span>)}</div>)}
         </div>)}
       </div>)}{pdfLayout.pages.length > 3 && <p className="more-pages">+ {pdfLayout.pages.length - 3} more pages in the export</p>}</div></div>
-      <footer><button onClick={() => setPdfOpen(false)}>Cancel</button><button className="primary" onClick={() => { downloadScreenplayPdf(parsed, pdfOptions, filename); setStatus(`Exported ${filename.replace(/\.(fountain|txt)$/i, '')}.pdf`); setPdfOpen(false); }}>Download PDF</button></footer>
+      <footer><button onClick={() => setPdfOpen(false)}>Cancel</button><button className="primary" onClick={() => { downloadScreenplayPdf(parsed, pdfOptions, filename, analysisReports); setStatus(`Exported ${filename.replace(/\.(fountain|txt)$/i, '')}.pdf`); setPdfOpen(false); }}>Download PDF</button></footer>
     </section></div>}
   </div>;
 }
