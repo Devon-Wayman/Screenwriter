@@ -12,4 +12,8 @@ export type BudgetTier = 'unspecified' | 'micro' | 'low' | 'medium' | 'high';
 export interface ProductionProfile { targetRuntimeMinutes: number | null; targetAudience: string; budgetTier: BudgetTier; castSizeTarget: number | null; availableLocations: string; stageDimensions: string; availableResources: string }
 export interface DocumentSettings { productionType: ProductionType; productionProfile: ProductionProfile; autosaveSeconds: number; revisionRetention: number }
 export interface RevisionInfo { id: string; createdAt: string; fingerprint: string; words: number; size: number }
+export type StageShapeType = 'rectangle' | 'circle' | 'line' | 'label' | 'light' | 'actor';
+export interface StageShape { id: string; type: StageShapeType; x: number; y: number; width: number; height: number; label: string; color: string; rotation: number }
+export interface StageSceneLayout { id: string; heading: string; sceneNumber?: string; order: number; shapes: StageShape[]; updatedAt: string }
+export interface StageLayoutDocument { version: 1; scenes: StageSceneLayout[] }
 export interface AnalysisReport { id: string; documentName: string; createdAt: string; model: string; endpoint: string; question: string; productionType?: ProductionType; analysis: string; revision: { fingerprint: string; words: number; scenes: number; characters: number } }

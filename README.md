@@ -47,6 +47,7 @@ Screenplays remain ordinary `.fountain` text files. There is no proprietary proj
 - Safe import that preserves an existing same-named NAS file
 - Fountain source downloads
 - Selectable-text screenplay PDFs
+- Per-scene stage diagrams with selectable layout pages, either appended to the screenplay or exported as a separate PDF
 - Optional analysis reports appended to screenplay PDFs for revision comparison
 - Selectable and separately exportable analysis reports
 - Automatic `(MORE)` and `(CONT'D)`, revision colors and marks, headers, footers, and watermarks
@@ -234,6 +235,10 @@ Smart Tab behavior:
 
 The Docker mount at `/data` is the source of truth for saved screenplays. Importing a local Fountain file immediately copies it there. If the filename already exists, the import receives a numbered name instead of overwriting the stored file.
 
+Stage layouts are available from the **Stage Layout** workspace tab. Each Fountain scene heading receives its own diagram, where set pieces, boundaries, labels, lights, and actors can be placed and labeled. Layouts autosave as editable vector data in JSON sidecars beneath `/data/stage-layouts`; the Fountain screenplay remains plain text and portable. The canvas is rendered as SVG in the browser, but separate `.svg` image files are not generated. Numbered scenes keep layouts associated more reliably when scenes are reordered, while unnumbered scenes are matched by heading and position.
+
+Renaming a screenplay currently starts a new layout sidecar. Rename the corresponding file in `/data/stage-layouts` as well if an existing layout must follow a manually renamed screenplay.
+
 Include the host screenplay directory in NAS snapshots and off-device backups. A NAS copy alone is not protection against disk failure, accidental deletion, or hardware loss.
 
 ## Autosave and recovery
@@ -245,12 +250,13 @@ The default retention is 20 snapshots per screenplay and can be configured from 
 ## Current limitations
 
 - No built-in authentication or multi-user permissions
-- No offline synchronization or automatic recovery snapshots yet
+- No offline synchronization yet
 - No real-time collaborative editing
 - No Final Draft `.fdx` import/export
 - Page locking across major production revisions is not yet supported
 - Fine-grained per-line revision tracking is not yet available; PDF revision colors and marks apply to the exported draft
 - Undo history is limited to the active browser session, while autosave recovery snapshots persist on the NAS
+- Stage layouts currently provide basic placement and property controls; resizing handles, layout undo/redo, and printable diagrams are planned
 
 ## Theme attributions
 

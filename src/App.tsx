@@ -1,10 +1,11 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 import { estimatedRuntime, parseFountain } from './fountain';
-import { downloadAnalysisReportsPdf, downloadScreenplayPdf, layoutScreenplay, type PdfOptions } from './pdf';
+import { downloadAnalysisReportsPdf, downloadScreenplayPdf, downloadStageLayoutsPdf, layoutScreenplay, type PdfOptions } from './pdf';
 import { smartKeyEdit } from './editing';
 import { UndoHistory, type HistoryEntry } from './history';
 import HelpModal from './HelpModal';
-import type { AnalysisReport, BudgetTier, Diagnostic, DocumentInfo, DocumentSettings, FountainLine, LineType, OllamaStatus, ProductionProfile, ProductionType, RevisionInfo } from './types';
+import StageLayout from './StageLayout';
+import type { AnalysisReport, BudgetTier, Diagnostic, DocumentInfo, DocumentSettings, FountainLine, LineType, OllamaStatus, ProductionProfile, ProductionType, RevisionInfo, StageLayoutDocument } from './types';
 
 const sample = `Title: The Glass Harbor
 Credit: Written by
@@ -95,7 +96,12 @@ export default function App() {
   const [pdfOpen, setPdfOpen] = useState(false);
   const [pdfOptions, setPdfOptions] = useState<PdfOptions>({ paperSize: 'letter', includeTitlePage: true, sceneNumbers: false, includeAnalysisReports: false, automaticContinuations: true, headerText: '', footerText: '', watermark: '', revisionColor: '#000000', revisionMarks: false });
   const [selectedReportIds, setSelectedReportIds] = useState<string[]>([]);
+  const [stageLayouts, setStageLayouts] = useState<StageLayoutDocument>({ version: 1, scenes: [] });
+  const [selectedLayoutIds, setSelectedLayoutIds] = useState<string[]>([]);
+  const [layoutExportMode, setLayoutExportMode] = useState<'none' | 'append' | 'separate'>('none');
+  const [layoutsLoading, setLayoutsLoading] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
+  const [workspaceTab, setWorkspaceTab] = useState<'script' | 'stage'>('script');
   const [helpOpen, setHelpOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [findText, setFindText] = useState('');
@@ -125,6 +131,7 @@ export default function App() {
   const pdfDocument = useMemo(() => pdfOpen ? parseFountain(content) : null, [pdfOpen, content]);
   const pdfLayout = useMemo(() => pdfDocument ? layoutScreenplay(pdfDocument, pdfOptions) : null, [pdfDocument, pdfOptions]);
   const selectedReports = useMemo(() => analysisReports.filter((report) => selectedReportIds.includes(report.id)), [analysisReports, selectedReportIds]);
+  const selectedLayouts = useMemo(() => stageLayouts.scenes.filter((scene) => selectedLayoutIds.includes(scene.id)), [stageLayouts, selectedLayoutIds]);
   const canUndo = history.current.canUndo;
   const canRedo = history.current.canRedo;
   const matches = useMemo(() => findText ? [...content.toLowerCase().matchAll(new RegExp(findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').toLowerCase(), 'g'))] : [], [content, findText]);
@@ -162,7 +169,7 @@ export default function App() {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && event.target === editor.current) { event.preventDefault(); event.shiftKey ? redo() : undo(); return; }
       if (event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'y' && event.target === editor.current) { event.preventDefault(); redo(); return; }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void save(); }
-      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'f') { event.preventDefault(); setFocusMode((active) => !active); return; }
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'f') { event.preventDefault(); setWorkspaceTab('script'); setFocusMode((active) => !active); return; }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); setFindOpen(true); }
       if (event.key === 'Escape' && focusMode) setFocusMode(false);
     };
@@ -365,7 +372,15 @@ export default function App() {
     setStatus(`Exported ${filename}`);
   }
 
-  function openPdfExport() { setSelectedReportIds(analysisReports.map((report) => report.id)); setPdfOptions((options) => ({ ...options, includeAnalysisReports: analysisReports.length > 0 })); setPdfOpen(true); }
+  async function openPdfExport() {
+    setSelectedReportIds(analysisReports.map((report) => report.id)); setPdfOptions((options) => ({ ...options, includeAnalysisReports: analysisReports.length > 0 }));
+    setLayoutsLoading(true); setPdfOpen(true);
+    try {
+      const layouts = await api<StageLayoutDocument>(`/api/stage-layouts/${encodeURIComponent(filename)}`);
+      setStageLayouts(layouts); setSelectedLayoutIds(layouts.scenes.map((scene) => scene.id)); setLayoutExportMode(layouts.scenes.some((scene) => scene.shapes.length) ? 'append' : 'none');
+    } catch (error) { setStageLayouts({ version: 1, scenes: [] }); setSelectedLayoutIds([]); setLayoutExportMode('none'); setStatus(error instanceof Error ? error.message : 'Could not load scene layouts'); }
+    finally { setLayoutsLoading(false); }
+  }
 
   function availableImportName(originalName: string) {
     const normalized = /\.(fountain|txt)$/i.test(originalName) ? originalName : `${originalName}.fountain`;
@@ -403,7 +418,7 @@ export default function App() {
         <details className="file-menu"><summary>File</summary><div><button onClick={newDocument}>New screenplay</button><button onClick={() => filePicker.current?.click()}>Open / Import Fountain…</button><button onClick={openPdfExport}>Export PDF…</button><button onClick={exportFountain}>Export Fountain…</button><button onClick={() => { void loadRevisions(); setRevisionsOpen(true); }}>Revision history…</button><button onClick={() => { void refreshOllama(); setOllamaSettingsOpen(true); }}>Ollama settings…</button></div></details>
         <input ref={filePicker} className="visually-hidden" type="file" accept=".fountain,.txt,text/plain" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFountain(file); }} />
         <button onClick={undo} disabled={!canUndo} title="Undo (Ctrl/⌘+Z)">Undo</button><button onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y or Ctrl/⌘+Shift+Z)">Redo</button><button onClick={() => setFindOpen(!findOpen)}>Find</button>
-        <button onClick={() => setFocusMode(true)} title="Focus Mode (Ctrl/⌘+Shift+F)">Focus</button>
+        <button onClick={() => { setWorkspaceTab('script'); setFocusMode(true); }} title="Focus Mode (Ctrl/⌘+Shift+F)">Focus</button>
         <button onClick={() => setHelpOpen(true)} title="Help (F1)">Help</button>
         <select value={syntaxTheme} onChange={(event) => setSyntaxTheme(event.target.value)} aria-label="Syntax color theme">{Object.keys(builtInSyntaxThemes).map((value) => <option key={value}>{value}</option>)}{customSyntaxThemes.length > 0 && <optgroup label="My themes">{customSyntaxThemes.map((item) => <option key={item.name}>{item.name}</option>)}</optgroup>}</select>
         <button onClick={openSyntaxEditor}>Colors</button>
@@ -411,8 +426,9 @@ export default function App() {
         <button className="primary" onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
       </nav>
     </header>
+    {!focusMode && <nav className="workspace-tabs" aria-label="Workspace"><button className={workspaceTab === 'script' ? 'active' : ''} onClick={() => setWorkspaceTab('script')}>Script</button><button className={workspaceTab === 'stage' ? 'active' : ''} onClick={() => setWorkspaceTab('stage')}>Stage Layout</button></nav>}
     {findOpen && <div className="findbar"><input autoFocus value={findText} onChange={(event) => setFindText(event.target.value)} placeholder="Find in script"/><span>{matches.length} matches</span><button onClick={() => matches[0] && jumpTo(matches[0].index!, findText.length)}>Next</button><button onClick={() => setFindOpen(false)}>Close</button></div>}
-    <main className={`workspace ${sidebarOpen ? '' : 'files-closed'}`}>
+    {workspaceTab === 'script' ? <main className={`workspace ${sidebarOpen ? '' : 'files-closed'}`}>
       {sidebarOpen && <aside className="files-panel">
         <div className="panel-heading"><div><small>LIBRARY</small><h2>Screenplays</h2></div><button onClick={newDocument} title="New screenplay">+</button></div>
         <div className="file-list">{documents.length === 0 && <p className="empty">No saved screenplays yet.</p>}{documents.map((document) => <button className={document.name === filename ? 'active' : ''} key={document.name} onClick={() => void openDocument(document.name)}><span className="file-icon">F</span><span><strong>{document.name.replace(/\.(fountain|txt)$/i, '')}</strong><small>{new Date(document.updatedAt).toLocaleString()}</small></span></button>)}</div>
@@ -441,7 +457,7 @@ export default function App() {
           {analysisReports.length > 0 && <div className="report-history"><h3>Revision reports <b>{analysisReports.length}</b></h3>{analysisReports.map((report, index) => <details className="ai-result" key={report.id} open={index === 0 && report.analysis === aiAnalysis}><summary><strong>{new Date(report.createdAt).toLocaleString()}</strong><span>Revision {report.revision.fingerprint} · {report.model}{report.productionType ? ` · ${productionLabels[report.productionType]}` : ''}</span><small>{report.question}</small></summary><pre>{report.analysis}</pre></details>)}</div>}
         </div>}</div>
       </aside>
-    </main>
+    </main> : <StageLayout documentName={filename} sceneLines={parsed.lines.filter((line) => line.type === 'scene')} onStatus={setStatus} />}
     {focusMode && <button className="focus-exit" onClick={() => setFocusMode(false)}><span>Focus Mode</span> Exit <kbd>Esc</kbd></button>}
     {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
     {revisionsOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRevisionsOpen(false); }}><section className="revisions-dialog" role="dialog" aria-modal="true" aria-labelledby="revisions-title"><header><div><small>RECOVERY</small><h2 id="revisions-title">Revision history</h2><p>Loading a snapshot changes only the editor. The current NAS copy is preserved until you explicitly save.</p></div><button onClick={() => setRevisionsOpen(false)} aria-label="Close">×</button></header><div className="revision-settings"><label>Autosave<select value={autosaveSeconds} onChange={(event) => { const value = Number(event.target.value); setAutosaveSeconds(value); void saveDocumentSettings({ autosaveSeconds: value }); }}><option value="0">Off</option><option value="30">Every 30 seconds</option><option value="60">Every minute</option><option value="120">Every 2 minutes</option><option value="300">Every 5 minutes</option></select></label><label>Keep snapshots<input type="number" min="5" max="100" value={revisionRetention} onChange={(event) => setRevisionRetention(Math.min(100, Math.max(5, Number(event.target.value) || 20)))} onBlur={() => void saveDocumentSettings()} /></label></div><div className="revision-list">{revisions.length === 0 && <p className="empty">No recovery snapshots yet. A snapshot is created when autosave runs after an edit.</p>}{revisions.map((revision) => <article key={revision.id}><div><strong>{new Date(revision.createdAt).toLocaleString()}</strong><span>Revision {revision.fingerprint} · {revision.words} words · {Math.max(1, Math.round(revision.size / 1024))} KB</span></div><button onClick={() => void restoreRevision(revision.id)}>Load in editor</button></article>)}</div><footer><button onClick={() => setRevisionsOpen(false)}>Close</button></footer></section></div>}
@@ -464,7 +480,9 @@ export default function App() {
         <div className="pdf-fields"><label>Revision color<input type="color" value={pdfOptions.revisionColor} onChange={(event) => setPdfOptions({ ...pdfOptions, revisionColor: event.target.value })} /></label><label>Header<input value={pdfOptions.headerText} onChange={(event) => setPdfOptions({ ...pdfOptions, headerText: event.target.value })} placeholder="Draft date or production" /></label><label>Footer<input value={pdfOptions.footerText} onChange={(event) => setPdfOptions({ ...pdfOptions, footerText: event.target.value })} placeholder="Confidential" /></label><label>Watermark<input value={pdfOptions.watermark} onChange={(event) => setPdfOptions({ ...pdfOptions, watermark: event.target.value })} placeholder="DRAFT" /></label></div>
         <label className="check-option"><input type="checkbox" checked={Boolean(pdfOptions.includeAnalysisReports)} disabled={!analysisReports.length} onChange={(event) => setPdfOptions({ ...pdfOptions, includeAnalysisReports: event.target.checked })} /><span><strong>Analysis reports</strong><small>{analysisReports.length ? `Append ${selectedReports.length} selected report${selectedReports.length === 1 ? '' : 's'}` : 'No saved reports for this screenplay'}</small></span></label>
         {analysisReports.length > 0 && <div className="pdf-report-select">{analysisReports.map((report) => <label key={report.id}><input type="checkbox" checked={selectedReportIds.includes(report.id)} onChange={(event) => setSelectedReportIds(event.target.checked ? [...selectedReportIds, report.id] : selectedReportIds.filter((id) => id !== report.id))} /><span>{new Date(report.createdAt).toLocaleDateString()} · {report.revision.fingerprint}</span></label>)}</div>}
-        <div className="pdf-facts"><span><strong>{pdfLayout.pages.length}</strong> screenplay pages</span><span><strong>{parsed.sceneCount}</strong> scenes</span><span><strong>{parsed.wordCount}</strong> words</span>{pdfOptions.includeAnalysisReports && <span><strong>{selectedReports.length}</strong> appended reports</span>}</div>
+        <div className="pdf-layout-options"><label>Scene layouts<select value={layoutExportMode} disabled={layoutsLoading || !stageLayouts.scenes.length} onChange={(event) => setLayoutExportMode(event.target.value as typeof layoutExportMode)}><option value="none">Do not export</option><option value="append">Append to screenplay PDF</option><option value="separate">Save as a separate PDF</option></select></label><small>{layoutsLoading ? 'Loading saved layouts…' : stageLayouts.scenes.length ? `${selectedLayouts.length} of ${stageLayouts.scenes.length} scenes selected` : 'No saved scene layouts found'}</small></div>
+        {layoutExportMode !== 'none' && stageLayouts.scenes.length > 0 && <><div className="pdf-selection-actions"><button onClick={() => setSelectedLayoutIds(stageLayouts.scenes.map((scene) => scene.id))}>Select all</button><button onClick={() => setSelectedLayoutIds([])}>Clear</button></div><div className="pdf-report-select pdf-layout-select">{stageLayouts.scenes.map((scene) => <label key={scene.id}><input type="checkbox" checked={selectedLayoutIds.includes(scene.id)} onChange={(event) => setSelectedLayoutIds(event.target.checked ? [...selectedLayoutIds, scene.id] : selectedLayoutIds.filter((id) => id !== scene.id))} /><span>{scene.sceneNumber ? `${scene.sceneNumber} · ` : ''}{scene.heading} · {scene.shapes.length} items</span></label>)}</div></>}
+        <div className="pdf-facts"><span><strong>{pdfLayout.pages.length}</strong> screenplay pages</span><span><strong>{parsed.sceneCount}</strong> scenes</span><span><strong>{parsed.wordCount}</strong> words</span>{pdfOptions.includeAnalysisReports && <span><strong>{selectedReports.length}</strong> appended reports</span>}{layoutExportMode !== 'none' && <span><strong>{selectedLayouts.length}</strong> layout pages {layoutExportMode === 'append' ? 'appended' : 'in separate PDF'}</span>}</div>
         <p className="pdf-note">PDF text uses embedded standard Courier metrics and remains selectable.</p>
       </aside><div className="pdf-preview">{pdfLayout.pages.slice(0, 3).map((page, index) => <div className="pdf-page" key={index} style={{ aspectRatio: `${pdfLayout.width}/${pdfLayout.height}` }}>
         {pdfOptions.watermark && <span className="preview-watermark">{pdfOptions.watermark}</span>}{pdfOptions.headerText && <span className="preview-header">{pdfOptions.headerText}</span>}{pdfOptions.footerText && <span className="preview-footer">{pdfOptions.footerText}</span>}{page.number !== null && page.number > 1 && <span className="preview-page-number">{page.number}</span>}
@@ -472,7 +490,7 @@ export default function App() {
           {block.sceneNumber && <i className="preview-scene-number">{block.sceneNumber}</i>}{block.lines.map((line, lineIndex) => <div key={lineIndex}>{line.map((run, runIndex) => <span key={runIndex} style={{ fontWeight: run.bold ? 700 : 400, fontStyle: run.italic ? 'italic' : 'normal', textDecoration: run.underline ? 'underline' : 'none' }}>{run.text}</span>)}</div>)}
         </div>)}
       </div>)}{pdfLayout.pages.length > 3 && <p className="more-pages">+ {pdfLayout.pages.length - 3} more pages in the export</p>}</div></div>
-      <footer>{selectedReports.length > 0 && <button onClick={() => { downloadAnalysisReportsPdf(selectedReports, pdfOptions, filename); setStatus('Exported selected analysis reports'); }}>Reports only</button>}<span /><button onClick={() => setPdfOpen(false)}>Cancel</button><button className="primary" onClick={() => { downloadScreenplayPdf(pdfDocument, pdfOptions, filename, selectedReports); setStatus(`Exported ${filename.replace(/\.(fountain|txt)$/i, '')}.pdf`); setPdfOpen(false); }}>Download PDF</button></footer>
+      <footer>{selectedReports.length > 0 && <button onClick={() => { downloadAnalysisReportsPdf(selectedReports, pdfOptions, filename); setStatus('Exported selected analysis reports'); }}>Reports only</button>}{selectedLayouts.length > 0 && <button onClick={() => { downloadStageLayoutsPdf(selectedLayouts, pdfOptions, filename); setStatus('Exported selected scene layouts'); }}>Layouts only</button>}<span /><button onClick={() => setPdfOpen(false)}>Cancel</button><button className="primary" onClick={() => { downloadScreenplayPdf(pdfDocument, pdfOptions, filename, selectedReports, layoutExportMode === 'append' ? selectedLayouts : []); if (layoutExportMode === 'separate' && selectedLayouts.length) downloadStageLayoutsPdf(selectedLayouts, pdfOptions, filename); setStatus(layoutExportMode === 'separate' && selectedLayouts.length ? 'Exported screenplay and scene-layout PDFs' : `Exported ${filename.replace(/\.(fountain|txt)$/i, '')}.pdf`); setPdfOpen(false); }}>{layoutExportMode === 'separate' && selectedLayouts.length ? 'Download PDFs' : 'Download PDF'}</button></footer>
     </section></div>}
   </div>;
 }

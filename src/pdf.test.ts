@@ -57,6 +57,15 @@ describe('screenplay PDF layout', () => {
     expect(pdf.getNumberOfPages()).toBe(2);
   });
 
+  it('appends selected scene layouts as landscape diagram pages', () => {
+    const document = parseFountain('INT. ROOM - DAY\n\nMARA\nHello.');
+    const layouts = [{ id: 'room', heading: 'INT. ROOM - DAY', sceneNumber: '1', order: 0, updatedAt: '2026-08-21T12:00:00.000Z', shapes: [{ id: 'table', type: 'rectangle' as const, x: 300, y: 240, width: 180, height: 90, label: 'Table', color: '#6f8f7c', rotation: 15 }] }];
+    const pdf = createScreenplayPdf(document, { ...options, includeTitlePage: false }, [], layouts);
+
+    expect(pdf.getNumberOfPages()).toBe(2);
+    expect(pdf.getPageInfo(2).pageContext.mediaBox.topRightX).toBeGreaterThan(pdf.getPageInfo(2).pageContext.mediaBox.topRightY);
+  });
+
   it('adds dialogue continuation markers when a speech crosses a page', () => {
     const speech = Array.from({ length: 900 }, () => 'word').join(' ');
     const layout = layoutScreenplay(parseFountain(`INT. ROOM - DAY\n\nMARA\n${speech}`), { ...options, includeTitlePage: false, automaticContinuations: true });

@@ -15,6 +15,8 @@ const appVersion = process.env.APP_VERSION || packageInfo.version || '0.0.0';
 const ollamaSettingsPath = path.join(dataDir, 'ollama-settings.json');
 const analysisReportsPath = path.join(dataDir, 'analysis-reports.json');
 const documentSettingsPath = path.join(dataDir, 'document-settings.json');
+const stageLayoutsDir = path.join(dataDir, 'stage-layouts');
+const legacyProjectsDir = path.join(dataDir, '.projects');
 
 interface OllamaSettings { endpoint: string; model: string }
 interface OllamaModel { name: string; size?: number; modified_at?: string }
@@ -364,6 +366,33 @@ app.post('/api/documents/:name/autosave', async (request, response, next) => {
     const after = await revisionSnapshots(name);
     await Promise.all(after.slice(retention).map((item) => unlink(path.join(directory, `${item.id}.json`)).catch(() => undefined)));
     response.json({ revision: { id: snapshot.id, createdAt: snapshot.createdAt, fingerprint: snapshot.fingerprint, words: snapshot.words, size: snapshot.size }, retained: Math.min(after.length, retention) });
+  } catch (error) { next(error); }
+});
+
+function stageLayoutPath(name: string) { return path.join(stageLayoutsDir, `${encodeURIComponent(name)}.stage-layouts.json`); }
+function legacyStageLayoutPath(name: string) { return path.join(legacyProjectsDir, `${encodeURIComponent(name)}.stage-layouts.json`); }
+
+app.get('/api/stage-layouts/:name', async (request, response, next) => {
+  try {
+    const name = safeFilename(request.params.name);
+    try { response.json(JSON.parse(await readFile(stageLayoutPath(name), 'utf8'))); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      try { response.json(JSON.parse(await readFile(legacyStageLayoutPath(name), 'utf8'))); }
+      catch (legacyError) { if ((legacyError as NodeJS.ErrnoException).code === 'ENOENT') response.json({ version: 1, scenes: [] }); else throw legacyError; }
+    }
+  } catch (error) { next(error); }
+});
+
+app.put('/api/stage-layouts/:name', async (request, response, next) => {
+  try {
+    const name = safeFilename(request.params.name); const layout = request.body;
+    if (!layout || layout.version !== 1 || !Array.isArray(layout.scenes)) return response.status(400).json({ error: 'Invalid stage layout document.' });
+    const serialized = JSON.stringify(layout, null, 2);
+    if (serialized.length > 5_000_000) return response.status(413).json({ error: 'Stage layout data is too large.' });
+    await mkdir(stageLayoutsDir, { recursive: true }); const filePath = stageLayoutPath(name); const temporaryPath = `${filePath}.${process.pid}.tmp`;
+    await writeFile(temporaryPath, serialized, 'utf8'); await rename(temporaryPath, filePath);
+    response.json({ saved: true, updatedAt: new Date().toISOString() });
   } catch (error) { next(error); }
 });
 

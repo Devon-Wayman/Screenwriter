@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf';
 import { printableMarkup } from './fountain';
-import type { AnalysisReport, FountainDocument, FountainLine } from './types';
+import type { AnalysisReport, FountainDocument, FountainLine, StageSceneLayout, StageShape } from './types';
 
 export interface PdfOptions {
   paperSize: 'letter' | 'a4';
@@ -50,6 +50,7 @@ function wrapRuns(runs: StyledRun[], width: number): StyledRun[][] {
     else line.push({ ...token });
     count += token.text.length;
   };
+
   for (const token of tokens) {
     if (/^\s+$/.test(token.text) && count === 0) continue;
     if (count > 0 && count + token.text.length > maxCharacters) { lines.push([]); count = 0; if (/^\s+$/.test(token.text)) continue; }
@@ -215,7 +216,53 @@ function appendAnalysisReports(pdf: jsPDF, reports: AnalysisReport[], options: P
   }
 }
 
-export function createScreenplayPdf(document: FountainDocument, options: PdfOptions, reports: AnalysisReport[] = []) {
+function shapeColor(value: string): [number, number, number] {
+  const match = /^#([0-9a-f]{6})$/i.exec(value);
+  return match ? [parseInt(match[1].slice(0, 2), 16), parseInt(match[1].slice(2, 4), 16), parseInt(match[1].slice(4, 6), 16)] : [90, 110, 98];
+}
+
+function rotatedCorners(shape: StageShape, scale: number, left: number, top: number) {
+  const centerX = shape.x + shape.width / 2, centerY = shape.y + shape.height / 2, angle = shape.rotation * Math.PI / 180;
+  return [[shape.x, shape.y], [shape.x + shape.width, shape.y], [shape.x + shape.width, shape.y + shape.height], [shape.x, shape.y + shape.height]].map(([x, y]) => {
+    const dx = x - centerX, dy = y - centerY;
+    return [left + (centerX + dx * Math.cos(angle) - dy * Math.sin(angle)) * scale, top + (centerY + dx * Math.sin(angle) + dy * Math.cos(angle)) * scale] as [number, number];
+  });
+}
+
+export function appendStageLayouts(pdf: jsPDF, layouts: StageSceneLayout[], options: Pick<PdfOptions, 'paperSize'>, useCurrentPage = false) {
+  const pageWidth = options.paperSize === 'letter' ? 792 : 841.89;
+  const pageHeight = options.paperSize === 'letter' ? 612 : 595.28;
+  const left = 48, top = 78, availableWidth = pageWidth - 96, availableHeight = pageHeight - 126;
+  const scale = Math.min(availableWidth / 1000, availableHeight / 650);
+  for (let sceneIndex = 0; sceneIndex < layouts.length; sceneIndex++) {
+    const scene = layouts[sceneIndex];
+    if (!useCurrentPage || sceneIndex > 0) pdf.addPage(options.paperSize, 'landscape');
+    pdf.setTextColor(25, 29, 27); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(15);
+    pdf.text(scene.sceneNumber ? `SCENE ${scene.sceneNumber} · ${scene.heading}` : scene.heading, left, 34);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8); pdf.setTextColor(105, 112, 108);
+    pdf.text('UPSTAGE', pageWidth / 2, 55, { align: 'center' }); pdf.text('AUDIENCE / DOWNSTAGE', pageWidth / 2, pageHeight - 18, { align: 'center' });
+    pdf.setDrawColor(55, 62, 58); pdf.setLineWidth(1); pdf.rect(left, top, 1000 * scale, 650 * scale);
+    for (const shape of scene.shapes) {
+      const [red, green, blue] = shapeColor(shape.color); pdf.setFillColor(red, green, blue); pdf.setDrawColor(red, green, blue);
+      const x = left + shape.x * scale, y = top + shape.y * scale, width = shape.width * scale, height = shape.height * scale;
+      if (shape.type === 'circle' || shape.type === 'light' || shape.type === 'actor') pdf.ellipse(x + width / 2, y + height / 2, width / 2, height / 2, 'F');
+      else if (shape.type === 'line') {
+        const angle = shape.rotation * Math.PI / 180, centerX = x + width / 2, centerY = y + height / 2;
+        const dx = width / 2 * Math.cos(angle) - height / 2 * Math.sin(angle), dy = width / 2 * Math.sin(angle) + height / 2 * Math.cos(angle);
+        pdf.setLineWidth(Math.max(2, 8 * scale)); pdf.line(centerX - dx, centerY - dy, centerX + dx, centerY + dy);
+      } else {
+        const corners = rotatedCorners(shape, scale, left, top); const [first, ...rest] = corners;
+        pdf.lines(rest.map((point, index) => [point[0] - (index ? rest[index - 1][0] : first[0]), point[1] - (index ? rest[index - 1][1] : first[1])]), first[0], first[1], [1, 1], 'F', true);
+      }
+      pdf.setTextColor(255, 255, 255); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8);
+      const label = pdf.splitTextToSize(shape.label || shape.type, Math.max(25, width - 8)) as string[];
+      pdf.text(label.slice(0, 2), x + width / 2, y + height / 2, { align: 'center', baseline: 'middle' });
+    }
+    if (!scene.shapes.length) { pdf.setTextColor(135, 140, 137); pdf.setFont('helvetica', 'italic'); pdf.setFontSize(11); pdf.text('No layout items have been placed for this scene.', pageWidth / 2, pageHeight / 2, { align: 'center' }); }
+  }
+}
+
+export function createScreenplayPdf(document: FountainDocument, options: PdfOptions, reports: AnalysisReport[] = [], stageLayouts: StageSceneLayout[] = []) {
   const layout = layoutScreenplay(document, options);
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: options.paperSize });
   pdf.setFont('courier', 'normal'); pdf.setFontSize(FONT_SIZE); pdf.setLineWidth(.5);
@@ -238,13 +285,21 @@ export function createScreenplayPdf(document: FountainDocument, options: PdfOpti
     }
   });
   if (options.includeAnalysisReports && reports.length) appendAnalysisReports(pdf, reports, options);
+  if (stageLayouts.length) appendStageLayouts(pdf, stageLayouts, options);
   pdf.setProperties({ title: document.titlePage.title || 'Screenplay', author: document.titlePage.author || document.titlePage.authors || '', subject: 'Screenplay exported from Screenwriter' });
   return pdf;
 }
 
-export function downloadScreenplayPdf(document: FountainDocument, options: PdfOptions, fountainFilename: string, reports: AnalysisReport[] = []) {
+export function downloadScreenplayPdf(document: FountainDocument, options: PdfOptions, fountainFilename: string, reports: AnalysisReport[] = [], stageLayouts: StageSceneLayout[] = []) {
   const name = fountainFilename.replace(/\.(fountain|txt)$/i, '') || 'Screenplay';
-  createScreenplayPdf(document, options, reports).save(`${name}.pdf`);
+  createScreenplayPdf(document, options, reports, stageLayouts).save(`${name}.pdf`);
+}
+
+export function downloadStageLayoutsPdf(layouts: StageSceneLayout[], options: Pick<PdfOptions, 'paperSize'>, fountainFilename: string) {
+  if (!layouts.length) return;
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: options.paperSize });
+  appendStageLayouts(pdf, layouts, options, true);
+  const name = fountainFilename.replace(/\.(fountain|txt)$/i, '') || 'Screenplay'; pdf.save(`${name}-scene-layouts.pdf`);
 }
 
 export function downloadAnalysisReportsPdf(reports: AnalysisReport[], options: Pick<PdfOptions, 'paperSize'>, fountainFilename: string) {
