@@ -1,12 +1,12 @@
 import { jsPDF } from 'jspdf';
 import { printableMarkup } from './fountain';
-import type { AnalysisReport, FountainDocument, FountainLine, StageSceneLayout, StageShape } from './types';
+import type { CharacterCard, FountainDocument, FountainLine, StageSceneLayout, StageShape } from './types';
 
 export interface PdfOptions {
   paperSize: 'letter' | 'a4';
   includeTitlePage: boolean;
   sceneNumbers: boolean;
-  includeAnalysisReports?: boolean;
+  includeCharacterCards?: boolean;
   automaticContinuations?: boolean;
   headerText?: string;
   footerText?: string;
@@ -16,7 +16,7 @@ export interface PdfOptions {
 }
 
 export interface StyledRun { text: string; bold: boolean; italic: boolean; underline: boolean }
-export interface PdfBlock { x: number; y: number; width: number; align: 'left' | 'center' | 'right'; lines: StyledRun[][]; type: string; sceneNumber?: string }
+export interface PdfBlock { x: number; y: number; width: number; align: 'left' | 'center' | 'right'; lines: StyledRun[][]; type: string; sceneNumber?: string; sourceStart?: number }
 export interface PdfPage { number: number | null; blocks: PdfBlock[] }
 export interface PdfLayout { width: number; height: number; pages: PdfPage[] }
 
@@ -117,9 +117,9 @@ export function layoutScreenplay(document: FountainDocument, options: PdfOptions
   newPage(scriptPage++);
 
   const ensure = (needed: number) => { if (y + needed > bottom) newPage(scriptPage++); };
-  const addBlock = (type: string, textRuns: StyledRun[], x: number, blockWidth: number, align: PdfBlock['align'], before = 0, sceneNumber?: string) => {
+  const addBlock = (type: string, textRuns: StyledRun[], x: number, blockWidth: number, align: PdfBlock['align'], before = 0, sceneNumber?: string, sourceStart?: number) => {
     const lines = wrapRuns(textRuns, blockWidth); ensure(before + lines.length * LINE_HEIGHT); y += before;
-    page.blocks.push({ x, y, width: blockWidth, align, lines, type, sceneNumber }); y += lines.length * LINE_HEIGHT;
+    page.blocks.push({ x, y, width: blockWidth, align, lines, type, sceneNumber, sourceStart }); y += lines.length * LINE_HEIGHT;
   };
   let sceneNumber = 0;
 
@@ -127,10 +127,10 @@ export function layoutScreenplay(document: FountainDocument, options: PdfOptions
     if (element.kind === 'break') { if (page.blocks.length) newPage(scriptPage++); continue; }
     if (element.kind === 'line') {
       const line = element.line; const runs = plainRuns(line);
-      if (line.type === 'scene') { sceneNumber++; ensure(36); addBlock('scene', runs, left, bodyWidth, 'left', page.blocks.length ? 12 : 0, options.sceneNumbers ? (line.sceneNumber || String(sceneNumber)) : undefined); }
-      else if (line.type === 'transition') addBlock('transition', runs, left, bodyWidth, 'right', 12);
-      else if (line.type === 'centered') addBlock('centered', runs, left, bodyWidth, 'center', 12);
-      else addBlock(line.type, runs, left, bodyWidth, 'left', line.type === 'action' ? 12 : 0);
+      if (line.type === 'scene') { sceneNumber++; ensure(36); addBlock('scene', runs, left, bodyWidth, 'left', page.blocks.length ? 12 : 0, options.sceneNumbers ? (line.sceneNumber || String(sceneNumber)) : undefined, line.start); }
+      else if (line.type === 'transition') addBlock('transition', runs, left, bodyWidth, 'right', 12, undefined, line.start);
+      else if (line.type === 'centered') addBlock('centered', runs, left, bodyWidth, 'center', 12, undefined, line.start);
+      else addBlock(line.type, runs, left, bodyWidth, 'left', line.type === 'action' ? 12 : 0, undefined, line.start);
       continue;
     }
     if (element.kind === 'dialogue') {
@@ -152,7 +152,7 @@ export function layoutScreenplay(document: FountainDocument, options: PdfOptions
           const needsSplit = wrapped.length - offset > available;
           const take = needsSplit && options.automaticContinuations !== false ? Math.max(1, available - 1) : available;
           const part = wrapped.slice(offset, offset + take);
-          page.blocks.push({ x, y, width: blockWidth, align: 'left', lines: part, type: line.type }); y += part.length * LINE_HEIGHT; offset += part.length;
+          page.blocks.push({ x, y, width: blockWidth, align: 'left', lines: part, type: line.type, sourceStart: line.start }); y += part.length * LINE_HEIGHT; offset += part.length;
           if (offset < wrapped.length) {
             if (options.automaticContinuations !== false) { page.blocks.push({ x: 180, y, width: 252, align: 'center', lines: [[{ text: '(MORE)', bold: false, italic: false, underline: false }]], type: 'more' }); }
             newPage(scriptPage++);
@@ -171,7 +171,7 @@ export function layoutScreenplay(document: FountainDocument, options: PdfOptions
       for (const line of lines) {
         const blockWidth = line.type === 'character' ? columnWidth : columnWidth - 24;
         const linesWrapped = wrapRuns(plainRuns(line), blockWidth);
-        page.blocks.push({ x: line.type === 'character' ? x : x + 12, y: columnY, width: blockWidth, align: line.type === 'character' ? 'center' : 'left', lines: linesWrapped, type: line.type });
+        page.blocks.push({ x: line.type === 'character' ? x : x + 12, y: columnY, width: blockWidth, align: line.type === 'character' ? 'center' : 'left', lines: linesWrapped, type: line.type, sourceStart: line.start });
         columnY += linesWrapped.length * LINE_HEIGHT;
       }
     };
@@ -192,27 +192,25 @@ function renderRunLine(pdf: jsPDF, runs: StyledRun[], x: number, y: number, widt
   }
 }
 
-function appendAnalysisReports(pdf: jsPDF, reports: AnalysisReport[], options: PdfOptions, useCurrentPage = false) {
-  const width = options.paperSize === 'letter' ? 612 : 595.28;
-  const height = options.paperSize === 'letter' ? 792 : 841.89;
-  const margin = 54, bottom = height - 54, bodyWidth = width - margin * 2;
-  for (let reportIndex = 0; reportIndex < reports.length; reportIndex++) {
-    const report = reports[reportIndex];
-    if (!useCurrentPage || reportIndex > 0) pdf.addPage(options.paperSize, 'portrait');
-    let y = margin;
-    const newReportPage = () => { pdf.addPage(options.paperSize, 'portrait'); y = margin; };
-    const write = (text: string, size = 10, bold = false, gap = 5) => {
-      pdf.setFont('helvetica', bold ? 'bold' : 'normal'); pdf.setFontSize(size);
-      const lines = pdf.splitTextToSize(text, bodyWidth) as string[];
-      const lineHeight = size * 1.35;
-      for (const line of lines) { if (y + lineHeight > bottom) newReportPage(); pdf.text(line, margin, y); y += lineHeight; }
-      y += gap;
-    };
-    write('SCREENWRITER ANALYSIS REPORT', 15, true, 12);
-    write(`Revision ${report.revision.fingerprint} · ${new Date(report.createdAt).toLocaleString()} · ${report.model}${report.productionType ? ` · ${report.productionType}` : ''}`, 9, false, 3);
-    write(`${report.revision.words} words · ${report.revision.scenes} scenes · ${report.revision.characters} characters`, 9, false, 12);
-    write('Question', 11, true, 4); write(report.question, 10, false, 10);
-    write('Analysis', 11, true, 4); write(report.analysis, 10, false, 0);
+function appendCharacterCards(pdf: jsPDF, cards: CharacterCard[], options: PdfOptions, useCurrentPage = false) {
+  const width = options.paperSize === 'letter' ? 612 : 595.28, height = options.paperSize === 'letter' ? 792 : 841.89;
+  const margin = 64, bottom = height - 64, bodyWidth = width - margin * 2;
+  if (!useCurrentPage) pdf.addPage(options.paperSize, 'portrait');
+  let y = margin;
+  const heading = () => { pdf.setTextColor(20, 20, 20); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(18); pdf.text('CHARACTERS', margin, y); y += 30; };
+  heading();
+  for (const card of cards) {
+    const meta = [card.age && `Age: ${card.age}`, `Casting: ${card.casting === 'any' ? 'Any gender' : card.casting[0].toUpperCase() + card.casting.slice(1)}`].filter(Boolean).join(' · ');
+    const traits = card.traits ? pdf.splitTextToSize(`Traits: ${card.traits}`, bodyWidth) as string[] : [];
+    const description = card.description ? pdf.splitTextToSize(card.description, bodyWidth) as string[] : [];
+    const needed = 34 + (traits.length + description.length) * 13;
+    if (y + needed > bottom) { pdf.addPage(options.paperSize, 'portrait'); y = margin; heading(); }
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(13); pdf.text(card.name, margin, y); y += 15;
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9); pdf.setTextColor(90, 90, 90); pdf.text(meta, margin, y); y += 16;
+    pdf.setTextColor(25, 25, 25); pdf.setFontSize(10);
+    if (traits.length) { pdf.text(traits, margin, y); y += traits.length * 13 + 5; }
+    if (description.length) { pdf.text(description, margin, y); y += description.length * 13; }
+    y += 18;
   }
 }
 
@@ -262,12 +260,16 @@ export function appendStageLayouts(pdf: jsPDF, layouts: StageSceneLayout[], opti
   }
 }
 
-export function createScreenplayPdf(document: FountainDocument, options: PdfOptions, reports: AnalysisReport[] = [], stageLayouts: StageSceneLayout[] = []) {
+export function createScreenplayPdf(document: FountainDocument, options: PdfOptions, stageLayouts: StageSceneLayout[] = [], characterCards: CharacterCard[] = []) {
   const layout = layoutScreenplay(document, options);
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: options.paperSize });
   pdf.setFont('courier', 'normal'); pdf.setFontSize(FONT_SIZE); pdf.setLineWidth(.5);
   layout.pages.forEach((page, pageIndex) => {
-    if (pageIndex > 0) pdf.addPage(options.paperSize, 'portrait');
+    const cards = options.includeCharacterCards ? characterCards : [];
+    const hasTitlePage = options.includeTitlePage && Object.keys(document.titlePage).length > 0;
+    if (pageIndex === 0 && cards.length && !hasTitlePage) { appendCharacterCards(pdf, cards, options, true); pdf.addPage(options.paperSize, 'portrait'); }
+    else if (pageIndex === 1 && cards.length && hasTitlePage) { appendCharacterCards(pdf, cards, options); pdf.addPage(options.paperSize, 'portrait'); }
+    else if (pageIndex > 0) pdf.addPage(options.paperSize, 'portrait');
     if (options.watermark) { pdf.setFont('helvetica', 'bold'); pdf.setFontSize(42); pdf.setTextColor(225, 225, 225); pdf.text(options.watermark, layout.width / 2, layout.height / 2, { align: 'center', angle: 35 }); }
     pdf.setFont('courier', 'normal'); pdf.setFontSize(9); pdf.setTextColor(100, 100, 100);
     if (options.headerText) pdf.text(options.headerText, 72, 42);
@@ -284,15 +286,14 @@ export function createScreenplayPdf(document: FountainDocument, options: PdfOpti
       if (options.revisionMarks) { pdf.setFont('courier', 'bold'); pdf.text('*', layout.width - 42, block.y); }
     }
   });
-  if (options.includeAnalysisReports && reports.length) appendAnalysisReports(pdf, reports, options);
   if (stageLayouts.length) appendStageLayouts(pdf, stageLayouts, options);
   pdf.setProperties({ title: document.titlePage.title || 'Screenplay', author: document.titlePage.author || document.titlePage.authors || '', subject: 'Screenplay exported from Screenwriter' });
   return pdf;
 }
 
-export function downloadScreenplayPdf(document: FountainDocument, options: PdfOptions, fountainFilename: string, reports: AnalysisReport[] = [], stageLayouts: StageSceneLayout[] = []) {
+export function downloadScreenplayPdf(document: FountainDocument, options: PdfOptions, fountainFilename: string, stageLayouts: StageSceneLayout[] = [], characterCards: CharacterCard[] = []) {
   const name = fountainFilename.replace(/\.(fountain|txt)$/i, '') || 'Screenplay';
-  createScreenplayPdf(document, options, reports, stageLayouts).save(`${name}.pdf`);
+  createScreenplayPdf(document, options, stageLayouts, characterCards).save(`${name}.pdf`);
 }
 
 export function downloadStageLayoutsPdf(layouts: StageSceneLayout[], options: Pick<PdfOptions, 'paperSize'>, fountainFilename: string) {
@@ -300,11 +301,4 @@ export function downloadStageLayoutsPdf(layouts: StageSceneLayout[], options: Pi
   const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: options.paperSize });
   appendStageLayouts(pdf, layouts, options, true);
   const name = fountainFilename.replace(/\.(fountain|txt)$/i, '') || 'Screenplay'; pdf.save(`${name}-scene-layouts.pdf`);
-}
-
-export function downloadAnalysisReportsPdf(reports: AnalysisReport[], options: Pick<PdfOptions, 'paperSize'>, fountainFilename: string) {
-  if (!reports.length) return;
-  const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: options.paperSize });
-  appendAnalysisReports(pdf, reports, { paperSize: options.paperSize, includeTitlePage: false, sceneNumbers: false }, true);
-  const name = fountainFilename.replace(/\.(fountain|txt)$/i, '') || 'Screenplay'; pdf.save(`${name}-analysis-reports.pdf`);
 }

@@ -41,7 +41,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
     <div className="help-body">
       <div className="help-copy">
         {tab === 'start' && <>
-          <h3>A screenplay is still plain text</h3><p>Leave a blank line between screenplay elements. Screenwriter recognizes what you type, colors it, analyzes it, and formats it later for PDF.</p>
+          <h3>A screenplay is still plain text</h3><p>Leave a blank line between screenplay elements. Screenwriter recognizes what you type, colors it, and formats it later for PDF.</p>
           <div className="help-steps"><article><b>1</b><div><strong>Set the location</strong><p>Start with <code>INT.</code>, <code>EXT.</code>, or <code>INT./EXT.</code>, then add the location and time.</p></div></article><article><b>2</b><div><strong>Describe what happens</strong><p>Action is ordinary sentence-case text separated by blank lines.</p></div></article><article><b>3</b><div><strong>Let someone speak</strong><p>Put an uppercase character cue on its own line. Dialogue follows immediately below it.</p></div></article></div>
           <aside className="help-callout"><strong>Fastest dialogue workflow</strong><p>On a blank line, press <kbd>Tab</kbd>, type the character name after <code>@</code>, then press <kbd>Enter</kbd> and write the dialogue.</p></aside>
         </>}
@@ -54,7 +54,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
             <article><code>CUT TO:</code><span><strong>Transition</strong>End in <code>TO:</code>, or prefix any transition with <code>&gt;</code>.</span></article>
             <article><code>JONAH ^</code><span><strong>Dual dialogue</strong>Add <code>^</code> to the second character cue.</span></article>
             <article><code>[[ private note ]]</code><span><strong>Note</strong>Visible while writing; omitted from the PDF.</span></article>
-            <article><code>/* alternate scene */</code><span><strong>Boneyard</strong>Keep removed material without printing or analyzing it.</span></article>
+            <article><code>/* alternate scene */</code><span><strong>Boneyard</strong>Keep removed material without printing it.</span></article>
             <article><code># Act One</code><span><strong>Section</strong>Use more <code>#</code> characters for nested structure.</span></article>
             <article><code>= The plan goes wrong.</code><span><strong>Synopsis</strong>An outline note associated with the following scene.</span></article>
             <article><code>~Song lyric</code><span><strong>Lyric</strong>A line intended to be sung.</span></article>
