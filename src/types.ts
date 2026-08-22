@@ -5,8 +5,6 @@ export interface CharacterStats { name: string; dialogueLines: number; dialogueW
 export interface Diagnostic { line: number; start: number; length: number; message: string; replacement: string }
 export interface FountainDocument { lines: FountainLine[]; characters: CharacterStats[]; diagnostics: Diagnostic[]; sceneCount: number; wordCount: number; titlePage: Record<string, string> }
 export interface DocumentInfo { name: string; updatedAt: string; size: number }
-export interface OllamaModel { name: string; size?: number; modified_at?: string }
-export interface OllamaStatus { connected: boolean; endpoint: string; models: OllamaModel[]; settings: { endpoint: string; model: string } }
 export type ProductionType = 'unspecified' | 'stage' | 'feature-film' | 'short-film' | 'television' | 'audio-drama';
 export type BudgetTier = 'unspecified' | 'micro' | 'low' | 'medium' | 'high';
 export interface ProductionProfile { targetRuntimeMinutes: number | null; targetAudience: string; budgetTier: BudgetTier; castSizeTarget: number | null; availableLocations: string; stageDimensions: string; availableResources: string }
@@ -16,4 +14,5 @@ export type StageShapeType = 'rectangle' | 'circle' | 'line' | 'label' | 'light'
 export interface StageShape { id: string; type: StageShapeType; x: number; y: number; width: number; height: number; label: string; color: string; rotation: number }
 export interface StageSceneLayout { id: string; heading: string; sceneNumber?: string; order: number; shapes: StageShape[]; updatedAt: string }
 export interface StageLayoutDocument { version: 1; scenes: StageSceneLayout[] }
-export interface AnalysisReport { id: string; documentName: string; createdAt: string; model: string; endpoint: string; question: string; productionType?: ProductionType; analysis: string; revision: { fingerprint: string; words: number; scenes: number; characters: number } }
+export type CharacterCasting = 'female' | 'male' | 'any';
+export interface CharacterCard { name: string; age: string; casting: CharacterCasting; traits: string; description: string }

@@ -7,8 +7,3 @@ services:
       - "3000:3000"
     volumes:
       - ./screenplays:/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      # Optional comma-separated endpoints checked before automatic discovery.
-      OLLAMA_URLS: ${OLLAMA_URLS:-}

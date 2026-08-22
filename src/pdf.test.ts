@@ -13,6 +13,7 @@ describe('screenplay PDF layout', () => {
     expect(layout.pages[0].blocks.some((block) => block.type === 'title')).toBe(true);
     expect(layout.pages[1].number).toBe(1);
     expect(layout.pages[1].blocks.find((block) => block.type === 'scene')?.sceneNumber).toBe('1');
+    expect(layout.pages[1].blocks.find((block) => block.type === 'scene')?.sourceStart).toBeGreaterThan(0);
   });
 
   it('lays dual dialogue out in separate columns', () => {
@@ -50,20 +51,20 @@ describe('screenplay PDF layout', () => {
     expect(layoutScreenplay(document, options).pages[1].blocks.find((block) => block.type === 'scene')?.sceneNumber).toBe('12A');
   });
 
-  it('appends revision-stamped analysis reports when requested', () => {
-    const document = parseFountain('INT. ROOM - DAY\n\nMARA\nHello.');
-    const report = { id: 'report-1', documentName: 'Test.fountain', createdAt: '2026-08-20T12:00:00.000Z', model: 'test-model', endpoint: 'http://ollama:11434', question: 'Rate it.', analysis: 'A concise production report.', revision: { fingerprint: 'abc123def456', words: 4, scenes: 1, characters: 1 } };
-    const pdf = createScreenplayPdf(document, { ...options, includeTitlePage: false, includeAnalysisReports: true }, [report]);
-    expect(pdf.getNumberOfPages()).toBe(2);
-  });
-
   it('appends selected scene layouts as landscape diagram pages', () => {
     const document = parseFountain('INT. ROOM - DAY\n\nMARA\nHello.');
     const layouts = [{ id: 'room', heading: 'INT. ROOM - DAY', sceneNumber: '1', order: 0, updatedAt: '2026-08-21T12:00:00.000Z', shapes: [{ id: 'table', type: 'rectangle' as const, x: 300, y: 240, width: 180, height: 90, label: 'Table', color: '#6f8f7c', rotation: 15 }] }];
-    const pdf = createScreenplayPdf(document, { ...options, includeTitlePage: false }, [], layouts);
+    const pdf = createScreenplayPdf(document, { ...options, includeTitlePage: false }, layouts);
 
     expect(pdf.getNumberOfPages()).toBe(2);
     expect(pdf.getPageInfo(2).pageContext.mediaBox.topRightX).toBeGreaterThan(pdf.getPageInfo(2).pageContext.mediaBox.topRightY);
+  });
+
+  it('inserts character cards between the title page and screenplay', () => {
+    const document = parseFountain('Title: Casting Test\nAuthor: Devon\n\nINT. ROOM - DAY\n\nMARA\nHello.');
+    const cards = [{ name: 'MARA', age: '30s', casting: 'female' as const, traits: 'Resolute and observant', description: 'The central investigator.' }];
+    const pdf = createScreenplayPdf(document, { ...options, includeCharacterCards: true }, [], cards);
+    expect(pdf.getNumberOfPages()).toBe(3);
   });
 
   it('adds dialogue continuation markers when a speech crosses a page', () => {

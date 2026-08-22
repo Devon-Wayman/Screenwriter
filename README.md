@@ -10,6 +10,7 @@ Screenplays remain ordinary `.fountain` text files. There is no proprietary proj
 
 - Fountain 1.1 syntax highlighting with customizable colors
 - Focus Mode with a full-window writing surface
+- Focus Mode selector for either editable Fountain text or a full-window, read-only formatted PDF preview
 - Smart Enter and Tab screenplay navigation
 - Application-owned undo and redo history
 - Search, scene navigation, adjustable text size, and multiple themes
@@ -25,18 +26,13 @@ Screenplays remain ordinary `.fountain` text files. There is no proprietary proj
 - Multiline title-page metadata and explicit scene numbers
 - Live diagnostics with one-click corrections
 
-### Analysis
+### Screenplay insights
 
 - Scene, character, and word counts
 - Dialogue totals by character
 - Character scene counts and estimated speaking time
+- NAS-persisted character cards with age, casting, traits, and role descriptions
 - Estimated screenplay runtime
-- Optional Ollama screenplay critique with automatic NAS discovery
-- Saved custom Ollama endpoint and model selection for Tailscale fallbacks
-- Consistent evidence-based reports covering structure, characters, dialogue, pacing, continuity, themes, production feasibility, and priority revisions
-- Unofficial MPAA-style content-rating estimate with category-specific reasoning
-- Persistent revision reports identified by screenplay fingerprint, model, and analysis date
-- Scene-boundary chunk analysis with compact evidence summaries and a rolling continuity ledger
 - Per-screenplay production formats for stage, feature film, short film, television, and audio drama
 - Production constraints for runtime, audience, budget, cast, available locations, stage dimensions, equipment, and effects
 
@@ -48,11 +44,18 @@ Screenplays remain ordinary `.fountain` text files. There is no proprietary proj
 - Fountain source downloads
 - Selectable-text screenplay PDFs
 - Per-scene stage diagrams with selectable layout pages, either appended to the screenplay or exported as a separate PDF
-- Optional analysis reports appended to screenplay PDFs for revision comparison
-- Selectable and separately exportable analysis reports
+- Optional character-card pages inserted between the title page and screenplay
 - Automatic `(MORE)` and `(CONT'D)`, revision colors and marks, headers, footers, and watermarks
 - US Letter and A4 PDF output
 - Title pages, pagination, inline emphasis, dual-dialogue columns, and optional scene numbers
+
+### Installable and offline
+
+- Installable Progressive Web App on supported desktop and mobile browsers
+- Offline application shell and per-device screenplay cache
+- Saves made without the NAS are queued locally and retried when the connection returns
+- Revision-token checks prevent an offline device from silently replacing a newer NAS copy
+- Conflicting work is uploaded as a timestamped `.fountain` copy so both versions survive
 
 ## Technology
 
@@ -123,33 +126,16 @@ The container uses these environment variables:
 | `PORT` | `3000` | HTTP port inside the container |
 | `SCREENWRITER_DATA_DIR` | `/data` | Persistent Fountain storage location |
 | `APP_VERSION` | Docker build argument | Version reported by `/api/health` |
-| `OLLAMA_URLS` | empty | Optional comma-separated Ollama endpoints checked before automatic discovery |
 
-## Ollama screenplay analysis
+## Installing the offline client
 
-Open the **AI** tab in the analysis sidebar. Screenwriter checks, in order:
+Open Screenwriter from the NAS address you want that device to use, then choose the browser's **Install app** or **Add to Home Screen** command. The installed client remembers that origin, so a copy installed from `https://screenwriter.example.ts.net` will continue synchronizing with that NAS address; there is no separate server field to maintain.
 
-1. Addresses supplied through `OLLAMA_URLS`
-2. `http://ollama:11434` for a container reachable by that name
-3. `http://host.docker.internal:11434` for an Ollama port published by the NAS
-4. The custom fallback saved through **AI → Settings**
+Service workers require a secure browser context. `localhost` works during local testing, but remote access should use HTTPS. For Tailscale, expose the Screenwriter port through Tailscale Serve or place it behind an HTTPS reverse proxy before installing it. Opening a raw `http://100.x.x.x:3000` address can still run the web editor, but browsers generally will not enable installation or offline caching there.
 
-The endpoint and preferred model are stored in `/data/ollama-settings.json`, alongside the persistent screenplay volume. Screenwriter communicates with Ollama from its Express server, so endpoint access and screenplay contents do not pass through the browser.
+Open each screenplay once while connected to make it available on that device. Thereafter, opening or saving while disconnected uses the browser's IndexedDB storage. Pending saves synchronize automatically when the browser reports that the network has returned. If another device saved the same screenplay in the meantime, Screenwriter keeps the NAS version and uploads the returning device's draft with an `offline conflict` timestamp in its filename.
 
-Long screenplays are analyzed sequentially in scene-boundary chunks. Each chunk produces a compact evidence record and continuity state using an 8K context; a final 16K synthesis combines those records into the saved report. This lowers peak inference memory compared with sending an entire feature screenplay through one large context. It takes more total inference time, but requests are deliberately sequential so they do not compete for memory. Character cues and scene headings from the Fountain parser ground every stage.
-
-During analysis, the server streams newline-delimited progress events to the browser. The AI panel reports the active chunk, completed and remaining chunk counts, final synthesis, failures, and report completion. Proxy buffering is disabled for this response so progress can pass through a typical NAS reverse proxy promptly.
-
-Choose a production format in the AI panel before analysis. The selection persists in `/data/document-settings.json`, appears in revision reports, and changes the production guidance supplied to every chunk. Stage reports treat written locations as potentially reusable or representational scenery, props, lighting, projection, and sound rather than assuming separate filming locations. Film and television reports instead consider physical locations, sets, permits, company moves, coverage, and shooting logistics.
-
-For separate CasaOS apps, make sure Ollama publishes port `11434` to the NAS. The Compose configuration maps `host.docker.internal` to the Linux Docker host gateway. Alternatively, place both containers on a shared Docker network and set:
-
-```yaml
-environment:
-  OLLAMA_URLS: http://ollama:11434
-```
-
-For a Tailscale-connected laptop, enter `http://100.x.y.z:11434` in AI settings. Ollama on that laptop must listen on the Tailscale interface rather than localhost, and its firewall and Tailnet ACL must permit the NAS to reach TCP port `11434`. Do not expose Ollama directly to the public internet.
+Browser storage is a working cache, not the authoritative backup. Keep the NAS data directory in regular snapshots, and export important Fountain files before clearing a browser's site data.
 
 ## CasaOS and remote access
 
@@ -250,7 +236,8 @@ The default retention is 20 snapshots per screenplay and can be configured from 
 ## Current limitations
 
 - No built-in authentication or multi-user permissions
-- No offline synchronization yet
+- Offline synchronization currently covers Fountain document content; character cards, production settings, stage layouts, and revision-history browsing still require the NAS connection
+- The installed PWA synchronizes with the origin it was installed from; switching between multiple server addresses is not yet available in-app
 - No real-time collaborative editing
 - No Final Draft `.fdx` import/export
 - Page locking across major production revisions is not yet supported
