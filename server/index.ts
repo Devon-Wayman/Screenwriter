@@ -6,19 +6,20 @@ import { createHash, randomUUID } from 'node:crypto';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
+const host = process.env.HOST || '0.0.0.0';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(here, '..');
 const dataDir = path.resolve(process.env.SCREENWRITER_DATA_DIR || path.join(appRoot, 'data'));
 const distDir = path.join(appRoot, 'dist');
 const packageInfo = JSON.parse(await readFile(path.join(appRoot, 'package.json'), 'utf8')) as { version?: string };
 const appVersion = process.env.APP_VERSION || packageInfo.version || '0.0.0';
+const appMode = process.env.APP_MODE === 'standalone' ? 'standalone' : 'server';
 const documentSettingsPath = path.join(dataDir, 'document-settings.json');
 const characterCardsPath = path.join(dataDir, 'character-cards.json');
 const spellingDictionariesPath = path.join(dataDir, 'spelling-dictionaries.json');
 const stageLayoutsDir = path.join(dataDir, 'stage-layouts');
 const legacyProjectsDir = path.join(dataDir, '.projects');
-
-function contentRevision(content: string) { return createHash('sha256').update(content).digest('hex'); }
+const trashDir = path.join(dataDir, '.trash');
 
 type ProductionType = 'unspecified' | 'stage' | 'feature-film' | 'short-film' | 'television' | 'audio-drama';
 type BudgetTier = 'unspecified' | 'micro' | 'low' | 'medium' | 'high';
@@ -60,7 +61,7 @@ function safeFilename(value: unknown): string {
   return /\.(fountain|txt)$/i.test(name) ? name : `${name}.fountain`;
 }
 
-app.get('/api/health', (_request, response) => response.json({ ok: true, version: appVersion }));
+app.get('/api/health', (_request, response) => response.json({ ok: true, version: appVersion, mode: appMode }));
 
 async function readDocumentSettings(): Promise<Record<string, DocumentSettings>> {
   try { return JSON.parse(await readFile(documentSettingsPath, 'utf8')); }
@@ -90,6 +91,7 @@ app.put('/api/document-settings/:name', async (request, response, next) => {
 });
 
 async function readCharacterCards() { try { return JSON.parse(await readFile(characterCardsPath, 'utf8')) as Record<string, unknown[]>; } catch { return {}; } }
+async function writeJsonFile(filePath: string, value: unknown) { await mkdir(dataDir, { recursive: true }); const temporaryPath = `${filePath}.${process.pid}.tmp`; await writeFile(temporaryPath, JSON.stringify(value, null, 2), 'utf8'); await rename(temporaryPath, filePath); }
 
 app.get('/api/character-cards/:name', async (request, response, next) => {
   try { const name = safeFilename(request.params.name); const cards = await readCharacterCards(); response.json(Array.isArray(cards[name]) ? cards[name] : []); }
@@ -160,11 +162,6 @@ app.post('/api/documents/:name/autosave', async (request, response, next) => {
     const name = safeFilename(request.params.name); const content = request.body?.content;
     if (typeof content !== 'string') return response.status(400).json({ error: 'Document content must be text.' });
     const filePath = path.join(dataDir, name);
-    const currentContent = await readFile(filePath, 'utf8').catch((error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? null : Promise.reject(error));
-    const currentRevision = currentContent === null ? null : contentRevision(currentContent);
-    if (Object.prototype.hasOwnProperty.call(request.body, 'baseRevision') && currentRevision !== request.body.baseRevision) {
-      return response.status(409).json({ error: 'This screenplay changed on another device.', currentRevision });
-    }
     await mkdir(dataDir, { recursive: true }); const directory = revisionDirectory(name); await mkdir(directory, { recursive: true });
     const fingerprint = createHash('sha256').update(content).digest('hex').slice(0, 12); const existing = await revisionSnapshots(name);
     let snapshot = existing.find((item) => item.fingerprint === fingerprint);
@@ -177,7 +174,7 @@ app.post('/api/documents/:name/autosave', async (request, response, next) => {
     const retention = Math.min(100, Math.max(5, Number(request.body?.retention) || 20));
     const after = await revisionSnapshots(name);
     await Promise.all(after.slice(retention).map((item) => unlink(path.join(directory, `${item.id}.json`)).catch(() => undefined)));
-    response.json({ revision: contentRevision(content), snapshot: { id: snapshot.id, createdAt: snapshot.createdAt, fingerprint: snapshot.fingerprint, words: snapshot.words, size: snapshot.size }, retained: Math.min(after.length, retention) });
+    response.json({ revision: { id: snapshot.id, createdAt: snapshot.createdAt, fingerprint: snapshot.fingerprint, words: snapshot.words, size: snapshot.size }, retained: Math.min(after.length, retention) });
   } catch (error) { next(error); }
 });
 
@@ -228,7 +225,7 @@ app.get('/api/documents/:name', async (request, response, next) => {
     const name = safeFilename(request.params.name);
     const filePath = path.join(dataDir, name);
     const [content, info] = await Promise.all([readFile(filePath, 'utf8'), stat(filePath)]);
-    response.json({ name, content, updatedAt: info.mtime.toISOString(), revision: contentRevision(content) });
+    response.json({ name, content, updatedAt: info.mtime.toISOString() });
   } catch (error) { next(error); }
 });
 
@@ -238,16 +235,35 @@ app.put('/api/documents/:name', async (request, response, next) => {
     const name = safeFilename(request.params.name);
     if (typeof request.body?.content !== 'string') return response.status(400).json({ error: 'Document content must be text.' });
     const filePath = path.join(dataDir, name);
-    const currentContent = await readFile(filePath, 'utf8').catch((error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? null : Promise.reject(error));
-    const currentRevision = currentContent === null ? null : contentRevision(currentContent);
-    if (Object.prototype.hasOwnProperty.call(request.body, 'baseRevision') && currentRevision !== request.body.baseRevision) {
-      return response.status(409).json({ error: 'This screenplay changed on another device.', currentRevision });
-    }
     const temporaryPath = `${filePath}.${process.pid}.tmp`;
     await writeFile(temporaryPath, request.body.content, 'utf8');
     await rename(temporaryPath, filePath);
     const info = await stat(filePath);
-    response.json({ name, updatedAt: info.mtime.toISOString(), revision: contentRevision(request.body.content) });
+    response.json({ name, updatedAt: info.mtime.toISOString() });
+  } catch (error) { next(error); }
+});
+
+async function moveIfPresent(source: string, destination: string) {
+  try { await rename(source, destination); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
+}
+
+app.delete('/api/documents/:name', async (request, response, next) => {
+  try {
+    const name = safeFilename(request.params.name); const deletedAt = new Date().toISOString();
+    const trashId = `${deletedAt.replace(/[:.]/g, '-')}-${encodeURIComponent(name)}-${randomUUID().slice(0, 8)}`;
+    const destination = path.join(trashDir, trashId); await mkdir(destination, { recursive: true });
+    const settings = await readDocumentSettings(); const cards = await readCharacterCards(); const dictionaries = await readSpellingDictionaries();
+    const metadata = { name, deletedAt, documentSettings: settings[name] || null, characterCards: cards[name] || [], spellingDictionary: spellingWords(dictionaries[name]) };
+    await writeFile(path.join(destination, 'project-metadata.json'), JSON.stringify(metadata, null, 2), 'utf8');
+    const movedSource = await moveIfPresent(path.join(dataDir, name), path.join(destination, name));
+    await moveIfPresent(stageLayoutPath(name), path.join(destination, 'stage-layouts.json'));
+    await moveIfPresent(legacyStageLayoutPath(name), path.join(destination, 'legacy-stage-layouts.json'));
+    await moveIfPresent(revisionDirectory(name), path.join(destination, 'revisions'));
+    delete settings[name]; delete cards[name]; delete dictionaries[name];
+    await Promise.all([writeDocumentSettings(settings), writeJsonFile(characterCardsPath, cards), writeJsonFile(spellingDictionariesPath, dictionaries)]);
+    if (!movedSource) return response.status(404).json({ error: 'Screenplay not found.' });
+    response.json({ deleted: true, name, deletedAt, trashId });
   } catch (error) { next(error); }
 });
 
@@ -260,4 +276,4 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
   response.status(code === 'ENOENT' ? 404 : 500).json({ error: code === 'ENOENT' ? 'Document not found.' : message });
 });
 
-app.listen(port, '0.0.0.0', () => console.log(`Screenwriter listening on port ${port}; documents: ${dataDir}`));
+app.listen(port, host, () => console.log(`Screenwriter listening on ${host}:${port}; documents: ${dataDir}`));

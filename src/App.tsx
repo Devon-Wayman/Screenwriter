@@ -5,7 +5,6 @@ import { smartKeyEdit } from './editing';
 import { UndoHistory, type HistoryEntry } from './history';
 import HelpModal from './HelpModal';
 import StageLayout from './StageLayout';
-import { cacheDocument, cachedDocument, cachedDocuments, conflictCopyName, pendingSaves, queueSave, removePendingSave, type CachedDocument } from './offline';
 import type { Misspelling } from './spellcheck';
 import type { BudgetTier, CharacterCard, Diagnostic, DocumentInfo, DocumentSettings, FountainLine, LineType, ProductionProfile, ProductionType, RevisionInfo, StageLayoutDocument } from './types';
 
@@ -84,14 +83,10 @@ function duration(seconds: number) {
   return rounded < 60 ? `${rounded}s` : `${Math.floor(rounded / 60)}m ${String(rounded % 60).padStart(2, '0')}s`;
 }
 
-class ApiError extends Error {
-  constructor(message: string, readonly status: number, readonly body: Record<string, unknown>) { super(message); }
-}
-
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...init?.headers } });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(body.error || `Request failed (${response.status})`, response.status, body);
+  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
   return body;
 }
 
@@ -102,8 +97,7 @@ export default function App() {
   const [dirty, setDirty] = useState(false);
   const [status, setStatus] = useState('Ready');
   const [saving, setSaving] = useState(false);
-  const [online, setOnline] = useState(navigator.onLine);
-  const [pendingSaveCount, setPendingSaveCount] = useState(0);
+  const [standalone, setStandalone] = useState(() => new URLSearchParams(window.location.search).get('mode') === 'standalone');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activePanel, setActivePanel] = useState<'characters' | 'corrections' | 'production'>('characters');
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('screenwriter-theme') as Theme) || 'paper');
@@ -140,16 +134,15 @@ export default function App() {
   const [misspellings, setMisspellings] = useState<Misspelling[]>([]);
   const [spellingMenu, setSpellingMenu] = useState<{ x: number; y: number; misspelling: Misspelling; suggestions: string[] } | null>(null);
   const [dictionaryOpen, setDictionaryOpen] = useState(false);
+  const [deleteProject, setDeleteProject] = useState<{ name: string; content: string; characterCards: CharacterCard[] } | null>(null);
+  const [deletingProject, setDeletingProject] = useState(false);
   const editor = useRef<HTMLTextAreaElement>(null);
   const highlightLayer = useRef<HTMLPreElement>(null);
   const filePicker = useRef<HTMLInputElement>(null);
   const history = useRef(new UndoHistory({ text: sample, selectionStart: 0, selectionEnd: 0 }));
   const autosaveState = useRef({ content: sample, filename: 'Untitled.fountain', dirty: false });
   const autosaveRunning = useRef(false);
-  const syncRunning = useRef(false);
   const savedContent = useRef(sample);
-  const documentRevision = useRef<string | null>(null);
-  const activeDocument = useRef({ filename: 'Untitled.fountain', content: sample });
   const parsed = useMemo(() => parseFountain(content), [content]);
   const syntaxColors = useMemo(() => customSyntaxThemes.find((item) => item.name === syntaxTheme)?.colors || builtInSyntaxThemes[syntaxTheme] || builtInSyntaxThemes['Screenwriter Classic'], [customSyntaxThemes, syntaxTheme]);
   const pdfDocument = useMemo(() => pdfOpen ? parseFountain(content) : null, [pdfOpen, content]);
@@ -178,34 +171,16 @@ export default function App() {
   const correctionCount = parsed.diagnostics.length + spellingIssues.length;
 
   const refreshDocuments = async () => {
-    try { setDocuments(await api<DocumentInfo[]>('/api/documents')); setOnline(true); }
-    catch (error) {
-      const cached = await cachedDocuments().catch(() => []);
-      setDocuments(cached.map((item) => ({ name: item.name, updatedAt: item.updatedAt, size: new Blob([item.content]).size })).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
-      setOnline(false); setStatus(cached.length ? 'NAS unavailable — showing offline screenplays' : (error instanceof Error ? error.message : 'Could not load files'));
-    }
+    try { setDocuments(await api<DocumentInfo[]>('/api/documents')); }
+    catch (error) { setStatus(error instanceof Error ? error.message : 'Could not load files'); }
   };
   useEffect(() => { refreshDocuments(); }, []);
-  useEffect(() => {
-    const updateCount = () => pendingSaves().then((items) => setPendingSaveCount(items.length)).catch(() => undefined);
-    const retrySync = () => { void synchronizePendingSaves(); void synchronizeSpellingDictionaries(); };
-    const handleOnline = () => { setOnline(true); retrySync(); };
-    const handleOffline = () => { setOnline(false); setStatus('Offline — edits will be kept on this device'); };
-    const handleVisibility = () => { if (document.visibilityState === 'visible') retrySync(); };
-    const timer = window.setInterval(retrySync, 10_000);
-    window.addEventListener('online', handleOnline); window.addEventListener('offline', handleOffline); window.addEventListener('focus', retrySync); document.addEventListener('visibilitychange', handleVisibility);
-    void updateCount(); retrySync();
-    return () => { window.clearInterval(timer); window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); window.removeEventListener('focus', retrySync); document.removeEventListener('visibilitychange', handleVisibility); };
-  }, []);
+  useEffect(() => { api<{ mode?: string }>('/api/health').then((health) => setStandalone(health.mode === 'standalone')).catch(() => undefined); }, []);
+  useEffect(() => { document.documentElement.dataset.appMode = standalone ? 'standalone' : 'server'; }, [standalone]);
   useEffect(() => { api<CharacterCard[]>(`/api/character-cards/${encodeURIComponent(filename)}`).then(setCharacterCards).catch(() => setCharacterCards([])); }, [filename]);
   useEffect(() => {
-    let active = true; const key = `screenwriter-spelling:${filename}`;
-    let local: string[] = []; try { local = JSON.parse(localStorage.getItem(key) || '[]'); } catch { /* Ignore invalid local data. */ }
-    setCustomDictionary(local);
-    api<string[]>(`/api/spelling-dictionary/${encodeURIComponent(filename)}`).then((remote) => {
-      if (!active) return; const merged = [...new Set([...remote, ...local])].sort((a, b) => a.localeCompare(b)); setCustomDictionary(merged); localStorage.setItem(key, JSON.stringify(merged));
-      if (merged.length !== remote.length) { localStorage.setItem(`screenwriter-spelling-pending:${filename}`, 'true'); void api(`/api/spelling-dictionary/${encodeURIComponent(filename)}`, { method: 'PUT', body: JSON.stringify(merged) }).then(() => localStorage.removeItem(`screenwriter-spelling-pending:${filename}`)); }
-    }).catch(() => undefined);
+    let active = true; setCustomDictionary([]);
+    api<string[]>(`/api/spelling-dictionary/${encodeURIComponent(filename)}`).then((words) => { if (active) setCustomDictionary(words); }).catch(() => undefined);
     return () => { active = false; };
   }, [filename]);
   useEffect(() => {
@@ -222,7 +197,6 @@ export default function App() {
     return () => { window.removeEventListener('pointerdown', dismiss); window.removeEventListener('keydown', escape); };
   }, []);
   useEffect(() => { autosaveState.current = { content, filename, dirty }; }, [content, filename, dirty]);
-  useEffect(() => { activeDocument.current = { content, filename }; }, [content, filename]);
   useEffect(() => {
     if (!autosaveSeconds) return;
     const timer = window.setInterval(() => { const current = autosaveState.current; if (current.dirty && !autosaveRunning.current) void autosaveDocument(current.content, current.filename); }, autosaveSeconds * 1000);
@@ -267,6 +241,17 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKey); return () => window.removeEventListener('keydown', handleKey);
   });
+  useEffect(() => window.screenwriterMenu?.onCommand((command) => {
+    if (command === 'new') newDocument();
+    else if (command === 'open') filePicker.current?.click();
+    else if (command === 'save') void save();
+    else if (command === 'export-pdf') void openPdfExport();
+    else if (command === 'export-fountain') exportFountain();
+    else if (command === 'dictionary') setDictionaryOpen(true);
+    else if (command === 'revisions') { void loadRevisions(); setRevisionsOpen(true); }
+    else if (command === 'undo') undo();
+    else if (command === 'redo') redo();
+  }));
 
   function restoreHistoryEntry(entry: HistoryEntry | null, action: 'Undo' | 'Redo') {
     if (!entry) { setStatus(`Nothing to ${action.toLowerCase()}`); return; }
@@ -285,58 +270,6 @@ export default function App() {
   function resetHistory(nextText: string, selectionStart = 0) {
     history.current.reset({ text: nextText, selectionStart, selectionEnd: selectionStart });
     savedContent.current = nextText;
-  }
-
-  function localDocument(name: string, text: string, revision = documentRevision.current): CachedDocument {
-    const now = new Date().toISOString();
-    return { name, content: text, revision, updatedAt: now, cachedAt: now };
-  }
-
-  async function preserveConflict(name: string, text: string) {
-    const conflictName = conflictCopyName(name);
-    const saved = await api<{ name: string; updatedAt: string; revision: string }>(`/api/documents/${encodeURIComponent(conflictName)}`, { method: 'PUT', body: JSON.stringify({ content: text }) });
-    await cacheDocument({ name: conflictName, content: text, revision: saved.revision, updatedAt: saved.updatedAt, cachedAt: new Date().toISOString() });
-    return { name: conflictName, revision: saved.revision };
-  }
-
-  async function synchronizePendingSaves() {
-    if (syncRunning.current) return;
-    syncRunning.current = true;
-    try {
-      const pending = await pendingSaves().catch(() => []);
-      if (!pending.length) { setPendingSaveCount(0); return; }
-      setStatus(`Reconnecting to NAS — syncing ${pending.length} screenplay${pending.length === 1 ? '' : 's'}…`);
-      let conflicts = 0;
-      for (const item of pending) {
-        try {
-          const saved = await api<{ name: string; updatedAt: string; revision: string }>(`/api/documents/${encodeURIComponent(item.name)}`, { method: 'PUT', body: JSON.stringify({ content: item.content, baseRevision: item.revision }) });
-          await cacheDocument({ ...item, revision: saved.revision, updatedAt: saved.updatedAt, cachedAt: new Date().toISOString() });
-          await removePendingSave(item.name);
-          if (activeDocument.current.filename === item.name && activeDocument.current.content === item.content) documentRevision.current = saved.revision;
-        } catch (error) {
-          if (error instanceof ApiError && error.status === 409) {
-            const conflict = await preserveConflict(item.name, item.content);
-            await removePendingSave(item.name); conflicts++;
-            if (activeDocument.current.filename === item.name && activeDocument.current.content === item.content) { setFilename(conflict.name); documentRevision.current = conflict.revision; }
-          } else { setOnline(false); break; }
-        }
-      }
-      const remaining = await pendingSaves().catch(() => []); setPendingSaveCount(remaining.length);
-      if (!remaining.length) { setOnline(true); setStatus(conflicts ? `Synced; ${conflicts} newer NAS version preserved alongside an offline conflict copy` : 'Offline changes synced to NAS'); void refreshDocuments(); }
-    } finally {
-      syncRunning.current = false;
-    }
-  }
-
-  async function synchronizeSpellingDictionaries() {
-    const prefix = 'screenwriter-spelling-pending:';
-    const pending = Object.keys(localStorage).filter((key) => key.startsWith(prefix));
-    for (const key of pending) {
-      const name = key.slice(prefix.length); let words: string[] = [];
-      try { words = JSON.parse(localStorage.getItem(`screenwriter-spelling:${name}`) || '[]'); } catch { localStorage.removeItem(key); continue; }
-      try { await api(`/api/spelling-dictionary/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(words) }); localStorage.removeItem(key); }
-      catch { return; }
-    }
   }
 
   function handleEditorKey(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
@@ -372,9 +305,8 @@ export default function App() {
   }
 
   async function saveCustomDictionary(next: string[], message: string) {
-    setCustomDictionary(next); localStorage.setItem(`screenwriter-spelling:${filename}`, JSON.stringify(next)); localStorage.setItem(`screenwriter-spelling-pending:${filename}`, 'true');
-    try { await api(`/api/spelling-dictionary/${encodeURIComponent(filename)}`, { method: 'PUT', body: JSON.stringify(next) }); localStorage.removeItem(`screenwriter-spelling-pending:${filename}`); setStatus(message); }
-    catch { setStatus(`${message} locally; waiting for the NAS`); }
+    try { const saved = await api<string[]>(`/api/spelling-dictionary/${encodeURIComponent(filename)}`, { method: 'PUT', body: JSON.stringify(next) }); setCustomDictionary(saved); setStatus(message); }
+    catch (error) { setStatus(error instanceof Error ? error.message : 'Could not save the screenplay dictionary'); }
   }
 
   async function save() {
@@ -382,41 +314,25 @@ export default function App() {
     if (!/\.(fountain|txt)$/i.test(safeName)) safeName += '.fountain';
     setSaving(true); setStatus('Saving…');
     try {
-      const saved = await api<{ name: string; updatedAt: string; revision: string }>(`/api/documents/${encodeURIComponent(safeName)}`, { method: 'PUT', body: JSON.stringify({ content, baseRevision: documentRevision.current }) });
-      documentRevision.current = saved.revision;
-      await cacheDocument({ name: safeName, content, revision: saved.revision, updatedAt: saved.updatedAt, cachedAt: new Date().toISOString() });
-      await removePendingSave(safeName); setPendingSaveCount((count) => Math.max(0, count - 1));
+      await api(`/api/documents/${encodeURIComponent(safeName)}`, { method: 'PUT', body: JSON.stringify({ content }) });
       await api(`/api/document-settings/${encodeURIComponent(safeName)}`, { method: 'PUT', body: JSON.stringify({ productionType, productionProfile, autosaveSeconds, revisionRetention }) }).catch(() => undefined);
-      setFilename(safeName); savedContent.current = content; setDirty(false); setStatus('Saved on NAS'); await refreshDocuments();
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 409) {
-        try { const conflict = await preserveConflict(safeName, content); setFilename(conflict.name); documentRevision.current = conflict.revision; savedContent.current = content; setDirty(false); setStatus(`The NAS copy changed elsewhere; your work was saved separately as ${conflict.name}`); await refreshDocuments(); }
-        catch { setStatus('The NAS copy changed elsewhere and the conflict copy could not be uploaded'); }
-      } else {
-        await queueSave(localDocument(safeName, content)); setPendingSaveCount((count) => count + (count ? 0 : 1));
-        setFilename(safeName); savedContent.current = content; setDirty(false); setOnline(false); setStatus('Saved on this device — waiting for the NAS');
-      }
-    }
+      setFilename(safeName); savedContent.current = content; setDirty(false); setStatus(standalone ? 'Saved locally' : 'Saved on NAS'); await refreshDocuments();
+    } catch (error) { setStatus(error instanceof Error ? error.message : 'Save failed'); }
     finally { setSaving(false); }
   }
 
   async function openDocument(name: string) {
     if (dirty && !confirm('Discard your unsaved changes and open another screenplay?')) return;
     try {
-      const document = await api<{ name: string; content: string; updatedAt: string; revision: string }>(`/api/documents/${encodeURIComponent(name)}`);
-      documentRevision.current = document.revision; await cacheDocument({ ...document, cachedAt: new Date().toISOString() }); setOnline(true);
+      const document = await api<{ name: string; content: string }>(`/api/documents/${encodeURIComponent(name)}`);
       setContent(document.content); setFilename(document.name); resetHistory(document.content); setDirty(false); setStatus(`Opened ${document.name}`);
       void loadDocumentSettings(document.name);
-    } catch (error) {
-      const document = await cachedDocument(name).catch(() => undefined);
-      if (!document) { setStatus(error instanceof Error ? error.message : 'Open failed'); return; }
-      documentRevision.current = document.revision; setContent(document.content); setFilename(document.name); resetHistory(document.content); setDirty(false); setOnline(false); setStatus(`Opened offline copy of ${document.name}`);
-    }
+    } catch (error) { setStatus(error instanceof Error ? error.message : 'Open failed'); }
   }
 
   function newDocument() {
     if (dirty && !confirm('Discard your unsaved changes?')) return;
-    setContent(''); setFilename('Untitled.fountain'); documentRevision.current = null; resetHistory(''); setProductionType('unspecified'); setProductionProfile(defaultProductionProfile); setRevisions([]); setDirty(false); setStatus('New screenplay'); editor.current?.focus();
+    setContent(''); setFilename('Untitled.fountain'); resetHistory(''); setProductionType('unspecified'); setProductionProfile(defaultProductionProfile); setRevisions([]); setDirty(false); setStatus('New screenplay'); editor.current?.focus();
   }
 
   function jumpTo(position: number, length = 0) {
@@ -484,16 +400,10 @@ export default function App() {
   async function autosaveDocument(snapshotContent: string, snapshotFilename: string) {
     autosaveRunning.current = true;
     try {
-      const saved = await api<{ revision: string }>(`/api/documents/${encodeURIComponent(snapshotFilename)}/autosave`, { method: 'POST', body: JSON.stringify({ content: snapshotContent, retention: revisionRetention, baseRevision: documentRevision.current }) });
-      documentRevision.current = saved.revision;
-      await cacheDocument({ name: snapshotFilename, content: snapshotContent, revision: saved.revision, updatedAt: new Date().toISOString(), cachedAt: new Date().toISOString() });
-      await removePendingSave(snapshotFilename); setPendingSaveCount((await pendingSaves()).length); setOnline(true);
+      await api(`/api/documents/${encodeURIComponent(snapshotFilename)}/autosave`, { method: 'POST', body: JSON.stringify({ content: snapshotContent, retention: revisionRetention }) });
       if (autosaveState.current.content === snapshotContent && autosaveState.current.filename === snapshotFilename) { savedContent.current = snapshotContent; setDirty(false); setStatus('Auto-saved with recovery snapshot'); }
       if (revisionsOpen) void loadRevisions(snapshotFilename); void refreshDocuments();
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 409) setStatus('Autosave paused: the NAS copy changed on another device. Use Save to preserve both copies.');
-      else { await queueSave(localDocument(snapshotFilename, snapshotContent)); setPendingSaveCount((await pendingSaves()).length); setOnline(false); if (autosaveState.current.content === snapshotContent) { savedContent.current = snapshotContent; setDirty(false); } setStatus('Auto-saved on this device — waiting for the NAS'); }
-    }
+    } catch (error) { setStatus(error instanceof Error ? `Autosave failed: ${error.message}` : 'Autosave failed'); }
     finally { autosaveRunning.current = false; }
   }
 
@@ -508,6 +418,34 @@ export default function App() {
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = filename; link.click(); URL.revokeObjectURL(link.href);
     setStatus(`Exported ${filename}`);
+  }
+
+  async function openDeleteProject(name: string) {
+    if (name === filename && dirty) { setStatus('Save or discard the active screenplay changes before deleting it.'); return; }
+    try {
+      const [document, cards] = await Promise.all([api<{ content: string }>(`/api/documents/${encodeURIComponent(name)}`), api<CharacterCard[]>(`/api/character-cards/${encodeURIComponent(name)}`)]);
+      setDeleteProject({ name, content: document.content, characterCards: cards });
+    } catch (error) { setStatus(error instanceof Error ? error.message : 'Could not prepare screenplay deletion'); }
+  }
+
+  function exportDeleteFountain() {
+    if (!deleteProject) return; const blob = new Blob([deleteProject.content], { type: 'text/plain;charset=utf-8' });
+    const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = deleteProject.name; link.click(); URL.revokeObjectURL(link.href);
+    setStatus(`Exported ${deleteProject.name} before deletion`);
+  }
+
+  function exportDeletePdf() {
+    if (!deleteProject) return; downloadScreenplayPdf(parseFountain(deleteProject.content), pdfOptions, deleteProject.name, [], deleteProject.characterCards); setStatus(`Exported ${deleteProject.name.replace(/\.(fountain|txt)$/i, '')}.pdf before deletion`);
+  }
+
+  async function confirmDeleteProject() {
+    if (!deleteProject) return; setDeletingProject(true);
+    try {
+      await api(`/api/documents/${encodeURIComponent(deleteProject.name)}`, { method: 'DELETE' }); const deletedName = deleteProject.name; setDeleteProject(null);
+      if (deletedName === filename) { setContent(''); setFilename('Untitled.fountain'); resetHistory(''); setProductionType('unspecified'); setProductionProfile(defaultProductionProfile); setRevisions([]); setDirty(false); }
+      setStatus(`Moved ${deletedName} and its project data to recoverable trash`); await refreshDocuments();
+    } catch (error) { setStatus(error instanceof Error ? error.message : 'Could not delete screenplay'); }
+    finally { setDeletingProject(false); }
   }
 
   async function openPdfExport() {
@@ -555,10 +493,9 @@ export default function App() {
     try {
       const importedContent = await file.text();
       const importedName = availableImportName(file.name);
-      const saved = await api<{ updatedAt: string; revision: string }>(`/api/documents/${encodeURIComponent(importedName)}`, { method: 'PUT', body: JSON.stringify({ content: importedContent }) });
-      documentRevision.current = saved.revision; await cacheDocument({ name: importedName, content: importedContent, revision: saved.revision, updatedAt: saved.updatedAt, cachedAt: new Date().toISOString() });
+      await api(`/api/documents/${encodeURIComponent(importedName)}`, { method: 'PUT', body: JSON.stringify({ content: importedContent }) });
       setContent(importedContent); setFilename(importedName); resetHistory(importedContent); setProductionType('unspecified'); setProductionProfile(defaultProductionProfile); setRevisions([]); setDirty(false);
-      setStatus(importedName === file.name ? `Imported and backed up ${importedName} on the NAS` : `Imported as ${importedName}; the existing NAS file was preserved`);
+      setStatus(importedName === file.name ? `Imported and backed up ${importedName} ${standalone ? 'locally' : 'on the NAS'}` : `Imported as ${importedName}; the existing ${standalone ? 'local' : 'NAS'} file was preserved`);
       await refreshDocuments();
     } catch (error) { setStatus(error instanceof Error ? error.message : 'Import failed'); }
     finally { setSaving(false); if (filePicker.current) filePicker.current.value = ''; }
@@ -567,9 +504,9 @@ export default function App() {
   return <div className={`app-shell ${focusMode ? 'focus-mode' : ''} ${focusMode && focusPdfEnabled ? 'focus-live-pdf' : ''}`}>
     <header className="topbar">
       <button className="brand" onClick={() => setSidebarOpen(!sidebarOpen)} aria-label="Toggle files"><span className="brand-mark">S</span><span>Screenwriter</span></button>
-      <div className="document-name"><input value={filename} onChange={(event) => { setFilename(event.target.value); documentRevision.current = null; setDirty(true); }} aria-label="Document filename" /><span>{dirty ? 'Unsaved changes' : pendingSaveCount ? `${pendingSaveCount} saved locally · waiting for NAS` : online ? 'All changes saved on NAS' : 'Offline copy ready'}</span></div>
+      <div className="document-name"><input value={filename} onChange={(event) => { setFilename(event.target.value); setDirty(true); }} aria-label="Document filename" /><span>{dirty ? 'Unsaved changes' : standalone ? 'All changes saved locally' : 'All changes saved on NAS'}</span></div>
       <nav className="actions">
-        <details className="file-menu"><summary>File</summary><div><button onClick={newDocument}>New screenplay</button><button onClick={() => filePicker.current?.click()}>Open / Import Fountain…</button><button onClick={openPdfExport}>Export PDF…</button><button onClick={exportFountain}>Export Fountain…</button><button onClick={() => setDictionaryOpen(true)}>Screenplay dictionary…</button><button onClick={() => { void loadRevisions(); setRevisionsOpen(true); }}>Revision history…</button></div></details>
+        {!standalone && <details className="file-menu"><summary>File</summary><div><button onClick={newDocument}>New screenplay</button><button onClick={() => filePicker.current?.click()}>Open / Import Fountain…</button><button onClick={openPdfExport}>Export PDF…</button><button onClick={exportFountain}>Export Fountain…</button><button onClick={() => setDictionaryOpen(true)}>Screenplay dictionary…</button><button onClick={() => { void loadRevisions(); setRevisionsOpen(true); }}>Revision history…</button></div></details>}
         <input ref={filePicker} className="visually-hidden" type="file" accept=".fountain,.txt,text/plain" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFountain(file); }} />
         <button onClick={undo} disabled={!canUndo} title="Undo (Ctrl/⌘+Z)">Undo</button><button onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y or Ctrl/⌘+Shift+Z)">Redo</button><button onClick={() => setFindOpen(!findOpen)}>Find</button>
         <button onClick={() => { setWorkspaceTab('script'); if (focusPdfEnabled) setFocusPreviewContent(content); setFocusMode(true); }} title="Focus Mode (Ctrl/⌘+Shift+F)">Focus</button>
@@ -585,8 +522,8 @@ export default function App() {
     {workspaceTab === 'script' ? <main className={`workspace ${sidebarOpen ? '' : 'files-closed'}`}>
       {sidebarOpen && <aside className="files-panel">
         <div className="panel-heading"><div><small>LIBRARY</small><h2>Screenplays</h2></div><button onClick={newDocument} title="New screenplay">+</button></div>
-        <div className="file-list">{documents.length === 0 && <p className="empty">No saved screenplays yet.</p>}{documents.map((document) => <button className={document.name === filename ? 'active' : ''} key={document.name} onClick={() => void openDocument(document.name)}><span className="file-icon">F</span><span><strong>{document.name.replace(/\.(fountain|txt)$/i, '')}</strong><small>{new Date(document.updatedAt).toLocaleString()}</small></span></button>)}</div>
-        <div className={`storage-note ${online ? '' : 'offline'}`}><span>●</span><div><strong>{online ? 'NAS connected' : 'Working offline'}</strong><small>{pendingSaveCount ? `${pendingSaveCount} screenplay${pendingSaveCount === 1 ? '' : 's'} waiting to sync.` : online ? 'Files persist in your mounted data folder.' : 'Saved copies remain on this device.'}</small></div></div>
+        <div className="file-list">{documents.length === 0 && <p className="empty">No saved screenplays yet.</p>}{documents.map((document) => <div className={`file-row ${document.name === filename ? 'active' : ''}`} key={document.name}><button className="file-open" onClick={() => void openDocument(document.name)}><span className="file-icon">F</span><span><strong>{document.name.replace(/\.(fountain|txt)$/i, '')}</strong><small>{new Date(document.updatedAt).toLocaleString()}</small></span></button><button className="file-delete" onClick={() => void openDeleteProject(document.name)} aria-label={`Delete ${document.name}`} title="Delete screenplay and project data">×</button></div>)}</div>
+        <div className="storage-note"><span>●</span><div><strong>{standalone ? 'Local storage' : 'NAS storage'}</strong><small>{standalone ? 'Files persist in this app’s data folder.' : 'Files persist in your mounted data folder.'}</small></div></div>
       </aside>}
       <section className="editor-panel">
         <div className="editor-toolbar"><select onChange={(event) => { const line = parsed.lines.filter((item) => item.type === 'scene')[Number(event.target.value)]; if (line) jumpTo(line.start, line.length); }} defaultValue=""><option value="" disabled>Jump to scene…</option>{parsed.lines.filter((line) => line.type === 'scene').map((line, index) => <option key={line.start} value={index}>{index + 1}. {line.text}</option>)}</select><small className="smart-hint" title="Enter advances elements. Shift+Enter inserts a literal break. Tab starts/cycles elements or adds a parenthetical.">Smart Enter + Tab</small><div><button onClick={() => setFontSize(Math.max(12, fontSize - 1))}>A−</button><span>{fontSize}px</span><button onClick={() => setFontSize(Math.min(28, fontSize + 1))}>A+</button></div></div>
@@ -610,11 +547,12 @@ export default function App() {
         </> : <div className="production-panel"><label>Production format<select value={productionType} onChange={(event) => void saveProductionType(event.target.value as ProductionType)}>{(Object.keys(productionLabels) as ProductionType[]).map((value) => <option key={value} value={value}>{productionLabels[value]}</option>)}</select></label><details className="production-constraints" open><summary>Production constraints</summary><div><label>Target runtime (minutes)<input type="number" min="1" value={productionProfile.targetRuntimeMinutes ?? ''} onChange={(event) => setProductionProfile({ ...productionProfile, targetRuntimeMinutes: event.target.value ? Number(event.target.value) : null })} /></label><label>Target audience<input value={productionProfile.targetAudience} onChange={(event) => setProductionProfile({ ...productionProfile, targetAudience: event.target.value })} /></label><label>Budget tier<select value={productionProfile.budgetTier} onChange={(event) => setProductionProfile({ ...productionProfile, budgetTier: event.target.value as BudgetTier })}><option value="unspecified">Not specified</option><option value="micro">Micro</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label><label>Target maximum cast<input type="number" min="1" value={productionProfile.castSizeTarget ?? ''} onChange={(event) => setProductionProfile({ ...productionProfile, castSizeTarget: event.target.value ? Number(event.target.value) : null })} /></label><label>Available locations or settings<textarea value={productionProfile.availableLocations} onChange={(event) => setProductionProfile({ ...productionProfile, availableLocations: event.target.value })} /></label><label>Stage dimensions / playing space<input value={productionProfile.stageDimensions} onChange={(event) => setProductionProfile({ ...productionProfile, stageDimensions: event.target.value })} placeholder="e.g. 30 ft × 20 ft proscenium" /></label><label>Available equipment, effects, and resources<textarea value={productionProfile.availableResources} onChange={(event) => setProductionProfile({ ...productionProfile, availableResources: event.target.value })} /></label><button onClick={() => void saveProductionProfile()}>Save production settings</button></div></details>
         </div>}</div>
       </aside>
-    </main> : <StageLayout documentName={filename} sceneLines={parsed.lines.filter((line) => line.type === 'scene')} onStatus={setStatus} />}
+    </main> : <StageLayout documentName={filename} sceneLines={parsed.lines.filter((line) => line.type === 'scene')} onStatus={setStatus} standalone={standalone} />}
     {focusMode && <div className="focus-controls"><button className={!focusPdfEnabled ? 'active' : ''} onClick={() => { setFocusPdfEnabled(false); requestAnimationFrame(() => editor.current?.focus()); }}>Fountain</button><button className={focusPdfEnabled ? 'active' : ''} onClick={() => { setFocusPdfEnabled(true); setFocusPreviewContent(content); }}>PDF Preview</button><button onClick={() => setFocusMode(false)}><span>Focus Mode</span> Exit <kbd>Esc</kbd></button></div>}
     {spellingMenu && <div className="spelling-menu" role="menu" style={{ left: spellingMenu.x, top: spellingMenu.y }} onPointerDown={(event) => event.stopPropagation()}><header>“{spellingMenu.misspelling.word}”</header>{spellingMenu.suggestions.map((suggestion) => <button key={suggestion} role="menuitem" onClick={() => replaceMisspelling(suggestion)}>{suggestion}</button>)}{spellingMenu.suggestions.length === 0 && <small>No suggestions found</small>}<hr /><button role="menuitem" onClick={() => void addToScreenplayDictionary()}>Add to this screenplay dictionary</button></div>}
     {dictionaryOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDictionaryOpen(false); }}><section className="dictionary-dialog" role="dialog" aria-modal="true" aria-labelledby="dictionary-title"><header><div><small>SPELL CHECKING</small><h2 id="dictionary-title">Screenplay dictionary</h2><p>These words are accepted only for {filename}.</p></div><button onClick={() => setDictionaryOpen(false)} aria-label="Close">×</button></header><div className="dictionary-words">{customDictionary.length === 0 && <p className="empty">No custom words yet. Right-click an underlined word in the editor to add it.</p>}{customDictionary.map((word) => <div key={word}><span>{word}</span><button onClick={() => void saveCustomDictionary(customDictionary.filter((item) => item !== word), `Removed “${word}” from this screenplay's dictionary`)}>Remove</button></div>)}</div><footer><span>{customDictionary.length} custom word{customDictionary.length === 1 ? '' : 's'}</span><button onClick={() => setDictionaryOpen(false)}>Close</button></footer></section></div>}
-    {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+    {deleteProject && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !deletingProject) setDeleteProject(null); }}><section className="delete-project-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-project-title"><header><div><small>RECOVERABLE DELETE</small><h2 id="delete-project-title">Delete {deleteProject.name}?</h2><p>Export the Fountain source and a PDF before continuing if you need portable backups.</p></div><button onClick={() => setDeleteProject(null)} disabled={deletingProject} aria-label="Close">×</button></header><div className="delete-project-body"><strong>This moves all associated project data to application trash:</strong><ul><li>Fountain screenplay source</li><li>Revision history and autosaves</li><li>Stage layouts and blocking diagrams</li><li>Character cards and production settings</li><li>Custom screenplay dictionary</li></ul><div className="delete-export-actions"><button onClick={exportDeleteFountain}>Export Fountain first</button><button onClick={exportDeletePdf}>Export PDF first</button></div><p>The project is moved into the server data folder’s <code>.trash</code> directory rather than immediately erased.</p></div><footer><button onClick={() => setDeleteProject(null)} disabled={deletingProject}>Cancel</button><button className="danger" onClick={() => void confirmDeleteProject()} disabled={deletingProject}>{deletingProject ? 'Deleting…' : 'Delete screenplay and associated data'}</button></footer></section></div>}
+    {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} standalone={standalone} />}
     {characterCardOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCharacterCardOpen(false); }}><section className="character-card-dialog" role="dialog" aria-modal="true" aria-labelledby="character-card-title"><header><div><small>CASTING NOTES</small><h2 id="character-card-title">{draftCharacterCard.name}</h2><p>Saved with this screenplay on the NAS.</p></div><button onClick={() => setCharacterCardOpen(false)} aria-label="Close">×</button></header><div className="character-card-fields"><label>Approximate age or range<input value={draftCharacterCard.age} onChange={(event) => setDraftCharacterCard({ ...draftCharacterCard, age: event.target.value })} placeholder="e.g. late 20s or 35–45" /></label><label>Casting<select value={draftCharacterCard.casting} onChange={(event) => setDraftCharacterCard({ ...draftCharacterCard, casting: event.target.value as CharacterCard['casting'] })}><option value="any">Any gender</option><option value="female">Female</option><option value="male">Male</option></select></label><label>Character traits<textarea value={draftCharacterCard.traits} onChange={(event) => setDraftCharacterCard({ ...draftCharacterCard, traits: event.target.value })} placeholder="Driven, guarded, quick-witted…" /></label><label>Description<textarea value={draftCharacterCard.description} onChange={(event) => setDraftCharacterCard({ ...draftCharacterCard, description: event.target.value })} placeholder="Role in the story, physical or vocal notes, relationships, and arc…" /></label></div><footer>{characterCards.some((card) => card.name === draftCharacterCard.name) && <button className="danger" onClick={() => void deleteCharacterCard()}>Delete card</button>}<span /><button onClick={() => setCharacterCardOpen(false)}>Cancel</button><button className="primary" onClick={() => void saveCharacterCard()}>Save card</button></footer></section></div>}
     {revisionsOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRevisionsOpen(false); }}><section className="revisions-dialog" role="dialog" aria-modal="true" aria-labelledby="revisions-title"><header><div><small>RECOVERY</small><h2 id="revisions-title">Revision history</h2><p>Loading a snapshot changes only the editor. The current NAS copy is preserved until you explicitly save.</p></div><button onClick={() => setRevisionsOpen(false)} aria-label="Close">×</button></header><div className="revision-settings"><label>Autosave<select value={autosaveSeconds} onChange={(event) => { const value = Number(event.target.value); setAutosaveSeconds(value); void saveDocumentSettings({ autosaveSeconds: value }); }}><option value="0">Off</option><option value="30">Every 30 seconds</option><option value="60">Every minute</option><option value="120">Every 2 minutes</option><option value="300">Every 5 minutes</option></select></label><label>Keep snapshots<input type="number" min="5" max="100" value={revisionRetention} onChange={(event) => setRevisionRetention(Math.min(100, Math.max(5, Number(event.target.value) || 20)))} onBlur={() => void saveDocumentSettings()} /></label></div><div className="revision-list">{revisions.length === 0 && <p className="empty">No recovery snapshots yet. A snapshot is created when autosave runs after an edit.</p>}{revisions.map((revision) => <article key={revision.id}><div><strong>{new Date(revision.createdAt).toLocaleString()}</strong><span>Revision {revision.fingerprint} · {revision.words} words · {Math.max(1, Math.round(revision.size / 1024))} KB</span></div><button onClick={() => void restoreRevision(revision.id)}>Load in editor</button></article>)}</div><footer><button onClick={() => setRevisionsOpen(false)}>Close</button></footer></section></div>}
     {syntaxEditorOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSyntaxEditorOpen(false); }}><section className="theme-editor" role="dialog" aria-modal="true" aria-labelledby="theme-editor-title">

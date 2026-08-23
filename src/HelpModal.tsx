@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-interface HelpModalProps { onClose: () => void }
+interface HelpModalProps { onClose: () => void; standalone?: boolean }
 type HelpTab = 'start' | 'syntax' | 'keys';
 
 const demos = [
@@ -33,7 +33,7 @@ function AnimatedHelpDemo() {
   </div>;
 }
 
-export default function HelpModal({ onClose }: HelpModalProps) {
+export default function HelpModal({ onClose, standalone = false }: HelpModalProps) {
   const [tab, setTab] = useState<HelpTab>('start');
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="help-dialog" role="dialog" aria-modal="true" aria-labelledby="help-title">
     <header><div><small>SCREENWRITER GUIDE</small><h2 id="help-title">Write naturally in Fountain</h2><p>Everything you need to format a screenplay without leaving the keyboard.</p></div><button onClick={onClose} aria-label="Close help">×</button></header>
@@ -71,7 +71,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
             <article><span><kbd>Tab</kbd></span><p><strong>Start or change an element</strong>On a blank line starts <code>@</code>. Press repeatedly before typing to cycle <code>@</code>, <code>!</code>, <code>.</code>, and <code>&gt;</code>.</p></article>
             <article><span><kbd>Tab</kbd></span><p><strong>Add a parenthetical</strong>After a character or dialogue, inserts <code>()</code> and puts the cursor inside.</p></article>
             <article><span><kbd>⌘/Ctrl</kbd><i>+</i><kbd>Z</kbd></span><p><strong>Undo</strong>Restores text and cursor position. Add <kbd>Shift</kbd> to redo; <kbd>Ctrl</kbd>+<kbd>Y</kbd> also redoes.</p></article>
-            <article><span><kbd>⌘/Ctrl</kbd><i>+</i><kbd>S</kbd></span><p><strong>Save</strong>Writes the current Fountain file to NAS storage.</p></article>
+            <article><span><kbd>⌘/Ctrl</kbd><i>+</i><kbd>S</kbd></span><p><strong>Save</strong>Writes the current Fountain file to {standalone ? 'local application storage' : 'NAS storage'}.</p></article>
             <article><span><kbd>⌘/Ctrl</kbd><i>+</i><kbd>F</kbd></span><p><strong>Find</strong>Searches inside the active screenplay.</p></article>
             <article><span><kbd>⌘/Ctrl</kbd><i>+</i><kbd>Shift</kbd><i>+</i><kbd>F</kbd></span><p><strong>Focus Mode</strong>Enters the full-window writing surface. Press <kbd>Esc</kbd> to leave.</p></article>
           </div>

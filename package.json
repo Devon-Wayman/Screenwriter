@@ -1,12 +1,17 @@
 {
   "name": "screenwriter-web",
+  "description": "A Fountain screenwriting editor for self-hosted and standalone use.",
+  "author": "Devon Wayman",
   "private": true,
-  "version": "2.1.5",
+  "main": "electron/main.mjs",
+  "version": "2.1.6",
   "type": "module",
   "scripts": {
     "dev": "concurrently \"vite\" \"tsx watch server/index.ts\"",
     "build": "tsc -b && vite build",
     "start": "node server-dist/index.js",
+    "desktop:dev": "npm run build && electron .",
+    "desktop:build": "./scripts/build-standalone.sh",
     "test": "vitest run"
   },
   "dependencies": {
@@ -26,8 +31,20 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "concurrently": "latest",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
     "tsx": "latest",
     "typescript": "latest",
     "vitest": "latest"
+  },
+  "build": {
+    "appId": "com.devonwayman.screenwriter",
+    "productName": "Screenwriter",
+    "asar": true,
+    "directories": { "output": "release" },
+    "files": ["electron/**/*", "dist/**/*", "server-dist/**/*", "package.json"],
+    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.productivity" },
+    "win": { "target": ["nsis", "portable"] },
+    "linux": { "target": ["AppImage"], "category": "Office" }
   }
 }

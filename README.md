@@ -14,7 +14,7 @@ Screenplays remain ordinary `.fountain` text files. There is no proprietary proj
 - Smart Enter and Tab screenplay navigation
 - Application-owned undo and redo history
 - Search, scene navigation, adjustable text size, and multiple themes
-- Debounced offline English spell checking with correction suggestions
+- Debounced local English spell checking with correction suggestions
 - Per-screenplay custom dictionaries with right-click add and removal controls
 - In-app Fountain and keyboard guide with animated examples
 
@@ -51,14 +51,6 @@ Screenplays remain ordinary `.fountain` text files. There is no proprietary proj
 - US Letter and A4 PDF output
 - Title pages, pagination, inline emphasis, dual-dialogue columns, and optional scene numbers
 
-### Installable and offline
-
-- Installable Progressive Web App on supported desktop and mobile browsers
-- Offline application shell and per-device screenplay cache
-- Saves made without the NAS are queued locally and retried when the connection returns
-- Revision-token checks prevent an offline device from silently replacing a newer NAS copy
-- Conflicting work is uploaded as a timestamped `.fountain` copy so both versions survive
-
 ## Technology
 
 - React and TypeScript
@@ -67,6 +59,7 @@ Screenplays remain ordinary `.fountain` text files. There is no proprietary proj
 - jsPDF
 - Vitest
 - Docker using Node 22 Alpine
+- Optional Electron desktop packaging
 
 ## Quick start
 
@@ -95,6 +88,32 @@ Run the compiled production server:
 
 ```sh
 npm start
+```
+
+## Standalone desktop application
+
+The Electron build packages the same React editor and Express storage service into a desktop application. It does not connect to a NAS: screenplays, revisions, layouts, character cards, and dictionaries are stored beneath the operating system's Screenwriter application-data directory. The interface automatically switches from NAS wording to local-storage wording through the server's `APP_MODE=standalone` runtime flag. Desktop builds use the operating system's native **File** menu for New, Open, Save, exports, dictionary management, and revision history; the browser-only File control is hidden to avoid presenting duplicate menus.
+
+Build for the current operating system:
+
+```sh
+./scripts/build-standalone.sh
+```
+
+Or select a target explicitly:
+
+```sh
+./scripts/build-standalone.sh mac
+./scripts/build-standalone.sh windows
+./scripts/build-standalone.sh linux
+```
+
+Artifacts are written to `release/`, which is ignored by Git. Building macOS applications should be done on macOS. Windows installers are most reliable when built on Windows, and Linux AppImages on Linux; cross-platform packaging can require additional host tools such as Wine.
+
+For a development launch using production-built assets:
+
+```sh
+npm run desktop:dev
 ```
 
 ## Docker
@@ -128,16 +147,6 @@ The container uses these environment variables:
 | `PORT` | `3000` | HTTP port inside the container |
 | `SCREENWRITER_DATA_DIR` | `/data` | Persistent Fountain storage location |
 | `APP_VERSION` | Docker build argument | Version reported by `/api/health` |
-
-## Installing the offline client
-
-Open Screenwriter from the NAS address you want that device to use, then choose the browser's **Install app** or **Add to Home Screen** command. The installed client remembers that origin, so a copy installed from `https://screenwriter.example.ts.net` will continue synchronizing with that NAS address; there is no separate server field to maintain.
-
-Service workers require a secure browser context. `localhost` works during local testing, but remote access should use HTTPS. For Tailscale, expose the Screenwriter port through Tailscale Serve or place it behind an HTTPS reverse proxy before installing it. Opening a raw `http://100.x.x.x:3000` address can still run the web editor, but browsers generally will not enable installation or offline caching there.
-
-Open each screenplay once while connected to make it available on that device. Thereafter, opening or saving while disconnected uses the browser's IndexedDB storage. Pending saves synchronize automatically when the browser reports that the network has returned. If another device saved the same screenplay in the meantime, Screenwriter keeps the NAS version and uploads the returning device's draft with an `offline conflict` timestamp in its filename.
-
-Browser storage is a working cache, not the authoritative backup. Keep the NAS data directory in regular snapshots, and export important Fountain files before clearing a browser's site data.
 
 ## CasaOS and remote access
 
@@ -225,11 +234,13 @@ The Docker mount at `/data` is the source of truth for saved screenplays. Import
 
 Stage layouts are available from the **Stage Layout** workspace tab. Each Fountain scene heading receives its own diagram, where set pieces, boundaries, labels, lights, and actors can be placed and labeled. Layouts autosave as editable vector data in JSON sidecars beneath `/data/stage-layouts`; the Fountain screenplay remains plain text and portable. The canvas is rendered as SVG in the browser, but separate `.svg` image files are not generated. Numbered scenes keep layouts associated more reliably when scenes are reordered, while unnumbered scenes are matched by heading and position.
 
-Spell checking runs entirely in the browser from a bundled English dictionary and remains available offline. A built-in screenplay vocabulary accepts expected Fountain and production shorthand such as `INT.`, `EXT.`, `V.O.`, `O.S.`, `CONT'D`, `SFX`, `VFX`, `POV`, and `INTERCUT`. Right-click an underlined word to apply a suggestion or add it to the active screenplay's custom dictionary. Custom words persist in `/data/spelling-dictionaries.json`, with a local browser copy retained for offline work. Use **File → Screenplay dictionary** to review or remove accepted words.
+Spell checking runs locally in the browser from a bundled English dictionary and does not call an external service. A built-in screenplay vocabulary accepts expected Fountain and production shorthand such as `INT.`, `EXT.`, `V.O.`, `O.S.`, `CONT'D`, `SFX`, `VFX`, `POV`, and `INTERCUT`. Right-click an underlined word to apply a suggestion or add it to the active screenplay's custom dictionary. Custom words persist in `/data/spelling-dictionaries.json`. Use **File → Screenplay dictionary** to review or remove accepted words.
 
 Renaming a screenplay currently starts a new layout sidecar. Rename the corresponding file in `/data/stage-layouts` as well if an existing layout must follow a manually renamed screenplay.
 
 Include the host screenplay directory in NAS snapshots and off-device backups. A NAS copy alone is not protection against disk failure, accidental deletion, or hardware loss.
+
+Deleting a screenplay from the library first offers Fountain and PDF exports, then moves its source, stage layouts, revision history, character cards, document settings, and custom dictionary into `/data/.trash`. Each deleted project receives a timestamped folder and metadata file, so an administrator can recover it from the mounted data directory instead of the app immediately erasing it. Standalone builds use the equivalent `.trash` folder inside their local Screenwriter application-data directory.
 
 ## Autosave and recovery
 
@@ -240,9 +251,8 @@ The default retention is 20 snapshots per screenplay and can be configured from 
 ## Current limitations
 
 - No built-in authentication or multi-user permissions
-- Offline synchronization currently covers Fountain document content and screenplay dictionary additions; character cards, production settings, stage layouts, and revision-history browsing still require the NAS connection
+- Screenwriter requires a live connection to its Docker or local server; it does not cache or synchronize screenplay edits for offline use
 - The bundled spelling dictionary is English; additional language dictionaries are not yet selectable
-- The installed PWA synchronizes with the origin it was installed from; switching between multiple server addresses is not yet available in-app
 - No real-time collaborative editing
 - No Final Draft `.fdx` import/export
 - Page locking across major production revisions is not yet supported

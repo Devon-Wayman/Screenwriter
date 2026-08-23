@@ -5,7 +5,6 @@ RUN npm ci
 COPY tsconfig*.json vite.config.ts index.html ./
 COPY src ./src
 COPY server ./server
-COPY public ./public
 RUN npm run build
 
 FROM node:22-alpine AS production
