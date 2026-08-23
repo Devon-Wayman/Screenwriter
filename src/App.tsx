@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react';
 import { estimatedRuntime, parseFountain } from './fountain';
 import { createScreenplayPdf, downloadScreenplayPdf, downloadStageLayoutsPdf, layoutScreenplay, type PdfOptions } from './pdf';
 import { smartKeyEdit } from './editing';
@@ -6,6 +6,7 @@ import { UndoHistory, type HistoryEntry } from './history';
 import HelpModal from './HelpModal';
 import StageLayout from './StageLayout';
 import { cacheDocument, cachedDocument, cachedDocuments, conflictCopyName, pendingSaves, queueSave, removePendingSave, type CachedDocument } from './offline';
+import type { Misspelling } from './spellcheck';
 import type { BudgetTier, CharacterCard, Diagnostic, DocumentInfo, DocumentSettings, FountainLine, LineType, ProductionProfile, ProductionType, RevisionInfo, StageLayoutDocument } from './types';
 
 const sample = `Title: The Glass Harbor
@@ -42,8 +43,20 @@ const defaultProductionProfile: ProductionProfile = { targetRuntimeMinutes:null,
 type SyntaxPalette = Record<LineType, string>;
 interface SavedSyntaxTheme { name: string; colors: SyntaxPalette }
 
-const HighlightLayer = memo(function HighlightLayer({ innerRef, lines, colors, fontSize }: { innerRef: RefObject<HTMLPreElement | null>; lines: FountainLine[]; colors: SyntaxPalette; fontSize: number }) {
-  return <pre ref={innerRef} className="highlight-layer" style={{ fontSize }} aria-hidden="true">{lines.map((line) => <span key={line.index} style={{ color: colors[line.type] }}>{line.text}{line.index < lines.length - 1 ? '\n' : ''}</span>)}{' '}</pre>;
+function spellcheckedLine(line: FountainLine, misspellings: Misspelling[]) {
+  if (!misspellings.length) return line.text;
+  const fragments: ReactNode[] = []; let cursor = 0;
+  for (const misspelling of misspellings) {
+    const start = misspelling.start - line.start; const end = start + misspelling.length;
+    if (start > cursor) fragments.push(line.text.slice(cursor, start));
+    fragments.push(<span className="misspelling" key={`${misspelling.start}-${misspelling.word}`}>{line.text.slice(start, end)}</span>); cursor = end;
+  }
+  if (cursor < line.text.length) fragments.push(line.text.slice(cursor));
+  return fragments;
+}
+
+const HighlightLayer = memo(function HighlightLayer({ innerRef, lines, colors, fontSize, misspellings }: { innerRef: RefObject<HTMLPreElement | null>; lines: FountainLine[]; colors: SyntaxPalette; fontSize: number; misspellings: Map<number, Misspelling[]> }) {
+  return <pre ref={innerRef} className="highlight-layer" style={{ fontSize }} aria-hidden="true">{lines.map((line) => <span key={line.index} style={{ color: colors[line.type] }}>{spellcheckedLine(line, misspellings.get(line.index) || [])}{line.index < lines.length - 1 ? '\n' : ''}</span>)}{' '}</pre>;
 });
 
 const syntaxLabels: Record<LineType, string> = {
@@ -123,6 +136,10 @@ export default function App() {
   const [revisionRetention, setRevisionRetention] = useState(20);
   const [revisions, setRevisions] = useState<RevisionInfo[]>([]);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
+  const [customDictionary, setCustomDictionary] = useState<string[]>([]);
+  const [misspellings, setMisspellings] = useState<Misspelling[]>([]);
+  const [spellingMenu, setSpellingMenu] = useState<{ x: number; y: number; misspelling: Misspelling; suggestions: string[] } | null>(null);
+  const [dictionaryOpen, setDictionaryOpen] = useState(false);
   const editor = useRef<HTMLTextAreaElement>(null);
   const highlightLayer = useRef<HTMLPreElement>(null);
   const filePicker = useRef<HTMLInputElement>(null);
@@ -142,6 +159,23 @@ export default function App() {
   const canUndo = history.current.canUndo;
   const canRedo = history.current.canRedo;
   const matches = useMemo(() => findText ? [...content.toLowerCase().matchAll(new RegExp(findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').toLowerCase(), 'g'))] : [], [content, findText]);
+  const misspellingsByLine = useMemo(() => {
+    const byLine = new Map<number, Misspelling[]>(); let lineIndex = 0;
+    for (const misspelling of misspellings) {
+      while (lineIndex < parsed.lines.length - 1 && parsed.lines[lineIndex].start + parsed.lines[lineIndex].length < misspelling.start) lineIndex++;
+      const line = parsed.lines[lineIndex]; if (!line || misspelling.start < line.start || misspelling.start > line.start + line.length) continue;
+      const current = byLine.get(line.index) || []; current.push(misspelling); byLine.set(line.index, current);
+    }
+    return byLine;
+  }, [misspellings, parsed.lines]);
+  const spellingIssues = useMemo(() => {
+    let lineIndex = 0;
+    return misspellings.map((misspelling) => {
+      while (lineIndex < parsed.lines.length - 1 && parsed.lines[lineIndex].start + parsed.lines[lineIndex].length < misspelling.start) lineIndex++;
+      return { ...misspelling, line: parsed.lines[lineIndex]?.index ?? 0 };
+    });
+  }, [misspellings, parsed.lines]);
+  const correctionCount = parsed.diagnostics.length + spellingIssues.length;
 
   const refreshDocuments = async () => {
     try { setDocuments(await api<DocumentInfo[]>('/api/documents')); setOnline(true); }
@@ -154,7 +188,7 @@ export default function App() {
   useEffect(() => { refreshDocuments(); }, []);
   useEffect(() => {
     const updateCount = () => pendingSaves().then((items) => setPendingSaveCount(items.length)).catch(() => undefined);
-    const retrySync = () => void synchronizePendingSaves();
+    const retrySync = () => { void synchronizePendingSaves(); void synchronizeSpellingDictionaries(); };
     const handleOnline = () => { setOnline(true); retrySync(); };
     const handleOffline = () => { setOnline(false); setStatus('Offline — edits will be kept on this device'); };
     const handleVisibility = () => { if (document.visibilityState === 'visible') retrySync(); };
@@ -164,6 +198,29 @@ export default function App() {
     return () => { window.clearInterval(timer); window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); window.removeEventListener('focus', retrySync); document.removeEventListener('visibilitychange', handleVisibility); };
   }, []);
   useEffect(() => { api<CharacterCard[]>(`/api/character-cards/${encodeURIComponent(filename)}`).then(setCharacterCards).catch(() => setCharacterCards([])); }, [filename]);
+  useEffect(() => {
+    let active = true; const key = `screenwriter-spelling:${filename}`;
+    let local: string[] = []; try { local = JSON.parse(localStorage.getItem(key) || '[]'); } catch { /* Ignore invalid local data. */ }
+    setCustomDictionary(local);
+    api<string[]>(`/api/spelling-dictionary/${encodeURIComponent(filename)}`).then((remote) => {
+      if (!active) return; const merged = [...new Set([...remote, ...local])].sort((a, b) => a.localeCompare(b)); setCustomDictionary(merged); localStorage.setItem(key, JSON.stringify(merged));
+      if (merged.length !== remote.length) { localStorage.setItem(`screenwriter-spelling-pending:${filename}`, 'true'); void api(`/api/spelling-dictionary/${encodeURIComponent(filename)}`, { method: 'PUT', body: JSON.stringify(merged) }).then(() => localStorage.removeItem(`screenwriter-spelling-pending:${filename}`)); }
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [filename]);
+  useEffect(() => {
+    let cancelled = false; let idle = 0;
+    const timer = window.setTimeout(() => {
+      const run = () => void import('./spellcheck').then(({ findMisspellings }) => { if (!cancelled) setMisspellings(findMisspellings(content, customDictionary)); });
+      if ('requestIdleCallback' in window) idle = window.requestIdleCallback(run, { timeout: 1200 }); else run();
+    }, 650);
+    return () => { cancelled = true; window.clearTimeout(timer); if (idle && 'cancelIdleCallback' in window) window.cancelIdleCallback(idle); };
+  }, [content, customDictionary]);
+  useEffect(() => {
+    const dismiss = () => setSpellingMenu(null); const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') dismiss(); };
+    window.addEventListener('pointerdown', dismiss); window.addEventListener('keydown', escape);
+    return () => { window.removeEventListener('pointerdown', dismiss); window.removeEventListener('keydown', escape); };
+  }, []);
   useEffect(() => { autosaveState.current = { content, filename, dirty }; }, [content, filename, dirty]);
   useEffect(() => { activeDocument.current = { content, filename }; }, [content, filename]);
   useEffect(() => {
@@ -271,6 +328,17 @@ export default function App() {
     }
   }
 
+  async function synchronizeSpellingDictionaries() {
+    const prefix = 'screenwriter-spelling-pending:';
+    const pending = Object.keys(localStorage).filter((key) => key.startsWith(prefix));
+    for (const key of pending) {
+      const name = key.slice(prefix.length); let words: string[] = [];
+      try { words = JSON.parse(localStorage.getItem(`screenwriter-spelling:${name}`) || '[]'); } catch { localStorage.removeItem(key); continue; }
+      try { await api(`/api/spelling-dictionary/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(words) }); localStorage.removeItem(key); }
+      catch { return; }
+    }
+  }
+
   function handleEditorKey(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if ((event.nativeEvent as KeyboardEvent).isComposing || (event.key !== 'Enter' && event.key !== 'Tab') || event.metaKey || event.ctrlKey || event.altKey) return;
     event.preventDefault();
@@ -278,6 +346,35 @@ export default function App() {
     const edit = smartKeyEdit(content, field.selectionStart, field.selectionEnd, event.key, event.shiftKey);
     recordContent(edit.text, edit.selectionStart, edit.selectionEnd); setStatus(edit.message);
     requestAnimationFrame(() => { editor.current?.focus(); editor.current?.setSelectionRange(edit.selectionStart, edit.selectionEnd); });
+  }
+
+  async function openSpellingMenu(event: ReactMouseEvent<HTMLTextAreaElement>) {
+    const candidate = (() => {
+      const offset = event.currentTarget.selectionStart; const pattern = /[\p{L}][\p{L}\p{M}'’.-]*/gu;
+      for (const match of content.matchAll(pattern)) { if (match.index === undefined) continue; if (offset >= match.index && offset <= match.index + match[0].length) return { start: match.index, length: match[0].length, word: match[0] }; if (match.index > offset) break; }
+      return null;
+    })();
+    if (!candidate) return;
+    const misspelling = misspellings.find((item) => candidate.start < item.start + item.length && candidate.start + candidate.length > item.start); if (!misspelling) return;
+    event.preventDefault(); const position = { x: Math.min(event.clientX, window.innerWidth - 240), y: Math.min(event.clientY, window.innerHeight - 250) };
+    setSpellingMenu({ ...position, misspelling, suggestions: [] }); const { spellingSuggestions } = await import('./spellcheck'); setSpellingMenu({ ...position, misspelling, suggestions: spellingSuggestions(misspelling.word) });
+  }
+
+  function replaceMisspelling(replacement: string) {
+    if (!spellingMenu) return; const { start, length } = spellingMenu.misspelling;
+    const next = `${content.slice(0, start)}${replacement}${content.slice(start + length)}`; const cursor = start + replacement.length;
+    recordContent(next, cursor, cursor); setSpellingMenu(null); setStatus(`Replaced with “${replacement}”`); requestAnimationFrame(() => editor.current?.setSelectionRange(cursor, cursor));
+  }
+
+  async function addToScreenplayDictionary() {
+    if (!spellingMenu) return; const { normalizeDictionaryWord } = await import('./spellcheck'); const word = normalizeDictionaryWord(spellingMenu.misspelling.word); if (!word) return;
+    setSpellingMenu(null); await saveCustomDictionary([...new Set([...customDictionary, word])].sort((a, b) => a.localeCompare(b)), `Added “${word}” to this screenplay's dictionary`);
+  }
+
+  async function saveCustomDictionary(next: string[], message: string) {
+    setCustomDictionary(next); localStorage.setItem(`screenwriter-spelling:${filename}`, JSON.stringify(next)); localStorage.setItem(`screenwriter-spelling-pending:${filename}`, 'true');
+    try { await api(`/api/spelling-dictionary/${encodeURIComponent(filename)}`, { method: 'PUT', body: JSON.stringify(next) }); localStorage.removeItem(`screenwriter-spelling-pending:${filename}`); setStatus(message); }
+    catch { setStatus(`${message} locally; waiting for the NAS`); }
   }
 
   async function save() {
@@ -472,7 +569,7 @@ export default function App() {
       <button className="brand" onClick={() => setSidebarOpen(!sidebarOpen)} aria-label="Toggle files"><span className="brand-mark">S</span><span>Screenwriter</span></button>
       <div className="document-name"><input value={filename} onChange={(event) => { setFilename(event.target.value); documentRevision.current = null; setDirty(true); }} aria-label="Document filename" /><span>{dirty ? 'Unsaved changes' : pendingSaveCount ? `${pendingSaveCount} saved locally · waiting for NAS` : online ? 'All changes saved on NAS' : 'Offline copy ready'}</span></div>
       <nav className="actions">
-        <details className="file-menu"><summary>File</summary><div><button onClick={newDocument}>New screenplay</button><button onClick={() => filePicker.current?.click()}>Open / Import Fountain…</button><button onClick={openPdfExport}>Export PDF…</button><button onClick={exportFountain}>Export Fountain…</button><button onClick={() => { void loadRevisions(); setRevisionsOpen(true); }}>Revision history…</button></div></details>
+        <details className="file-menu"><summary>File</summary><div><button onClick={newDocument}>New screenplay</button><button onClick={() => filePicker.current?.click()}>Open / Import Fountain…</button><button onClick={openPdfExport}>Export PDF…</button><button onClick={exportFountain}>Export Fountain…</button><button onClick={() => setDictionaryOpen(true)}>Screenplay dictionary…</button><button onClick={() => { void loadRevisions(); setRevisionsOpen(true); }}>Revision history…</button></div></details>
         <input ref={filePicker} className="visually-hidden" type="file" accept=".fountain,.txt,text/plain" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFountain(file); }} />
         <button onClick={undo} disabled={!canUndo} title="Undo (Ctrl/⌘+Z)">Undo</button><button onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y or Ctrl/⌘+Shift+Z)">Redo</button><button onClick={() => setFindOpen(!findOpen)}>Find</button>
         <button onClick={() => { setWorkspaceTab('script'); if (focusPdfEnabled) setFocusPreviewContent(content); setFocusMode(true); }} title="Focus Mode (Ctrl/⌘+Shift+F)">Focus</button>
@@ -494,26 +591,29 @@ export default function App() {
       <section className="editor-panel">
         <div className="editor-toolbar"><select onChange={(event) => { const line = parsed.lines.filter((item) => item.type === 'scene')[Number(event.target.value)]; if (line) jumpTo(line.start, line.length); }} defaultValue=""><option value="" disabled>Jump to scene…</option>{parsed.lines.filter((line) => line.type === 'scene').map((line, index) => <option key={line.start} value={index}>{index + 1}. {line.text}</option>)}</select><small className="smart-hint" title="Enter advances elements. Shift+Enter inserts a literal break. Tab starts/cycles elements or adds a parenthetical.">Smart Enter + Tab</small><div><button onClick={() => setFontSize(Math.max(12, fontSize - 1))}>A−</button><span>{fontSize}px</span><button onClick={() => setFontSize(Math.min(28, fontSize + 1))}>A+</button></div></div>
         <div className="editor-stack">
-          <HighlightLayer innerRef={highlightLayer} lines={parsed.lines} colors={syntaxColors} fontSize={fontSize} />
-          <textarea ref={editor} className="editor" style={{ fontSize }} value={content} wrap="soft" onChange={(event) => { const field = event.currentTarget; const inputType = (event.nativeEvent as InputEvent).inputType || 'typing'; recordContent(field.value, field.selectionStart, field.selectionEnd, inputType); setStatus('Editing…'); }} onKeyDown={handleEditorKey} onScroll={(event) => { if (highlightLayer.current) { highlightLayer.current.scrollTop = event.currentTarget.scrollTop; highlightLayer.current.scrollLeft = event.currentTarget.scrollLeft; } }} spellCheck={false} placeholder="Write Fountain here…" aria-label="Fountain screenplay editor" />
+          <HighlightLayer innerRef={highlightLayer} lines={parsed.lines} colors={syntaxColors} fontSize={fontSize} misspellings={misspellingsByLine} />
+          <textarea ref={editor} className="editor" style={{ fontSize }} value={content} wrap="soft" onChange={(event) => { const field = event.currentTarget; const inputType = (event.nativeEvent as InputEvent).inputType || 'typing'; recordContent(field.value, field.selectionStart, field.selectionEnd, inputType); setStatus('Editing…'); }} onKeyDown={handleEditorKey} onContextMenu={(event) => void openSpellingMenu(event)} onScroll={(event) => { if (highlightLayer.current) { highlightLayer.current.scrollTop = event.currentTarget.scrollTop; highlightLayer.current.scrollLeft = event.currentTarget.scrollLeft; } }} spellCheck={false} placeholder="Write Fountain here…" aria-label="Fountain screenplay editor" />
         </div>
-        <footer className="statusbar"><span>{status}</span><span>{parsed.sceneCount} scenes · {parsed.characters.length} characters · {parsed.wordCount} words · est. {estimatedRuntime(parsed)}</span></footer>
+        <footer className="statusbar"><span>{status}</span><span>{parsed.sceneCount} scenes · {parsed.characters.length} characters · {parsed.wordCount} words · {misspellings.length} spelling · est. {estimatedRuntime(parsed)}</span></footer>
       </section>
       {focusMode && focusPdfEnabled && <aside className="focus-pdf-preview" aria-label="Read-only screenplay PDF preview"><header><span>PDF PREVIEW · READ ONLY</span><small>{focusPdfUrl ? 'Actual export rendering' : 'Preparing preview…'}</small></header><div>{focusPdfUrl && <iframe src={`${focusPdfUrl}#toolbar=0&navpanes=0`} title="Screenplay PDF preview" />}</div></aside>}
       <aside className="analysis-panel">
         <div className="analysis-summary"><small>DOCUMENT STATS</small><h2>Your screenplay at a glance</h2><div className="metrics"><div><strong>{parsed.sceneCount}</strong><span>Scenes</span></div><div><strong>{parsed.characters.length}</strong><span>Characters</span></div><div><strong>{parsed.wordCount}</strong><span>Words</span></div><div><strong>{estimatedRuntime(parsed)}</strong><span>Runtime</span></div></div></div>
-        <div className="tabs"><button className={activePanel === 'characters' ? 'active' : ''} onClick={() => setActivePanel('characters')}>Characters</button><button className={activePanel === 'corrections' ? 'active' : ''} onClick={() => setActivePanel('corrections')}>Corrections <b>{parsed.diagnostics.length}</b></button><button className={activePanel === 'production' ? 'active' : ''} onClick={() => setActivePanel('production')}>Production</button></div>
+        <div className="tabs"><button className={activePanel === 'characters' ? 'active' : ''} onClick={() => setActivePanel('characters')}>Characters</button><button className={activePanel === 'corrections' ? 'active' : ''} onClick={() => setActivePanel('corrections')}>Corrections <b>{correctionCount}</b></button><button className={activePanel === 'production' ? 'active' : ''} onClick={() => setActivePanel('production')}>Production</button></div>
         <div className="analysis-content">{activePanel === 'characters' ? <>
           {parsed.characters.length === 0 && <p className="empty">Character cues and dialogue will appear here as you write.</p>}
           {parsed.characters.map((character) => <article className="character" key={character.name}><div className="avatar">{character.name.slice(0, 2)}</div><div><h3>{character.name}</h3><p>{character.dialogueLines} lines · {character.dialogueWords} words · {character.sceneCount} scenes</p></div><time>{duration(character.estimatedSeconds)}</time><button className={characterCards.some((card) => card.name === character.name) ? 'card-saved' : ''} onClick={() => openCharacterCard(character.name)} title="Edit character card">Card</button></article>)}
         </> : activePanel === 'corrections' ? <>
-          {parsed.diagnostics.length === 0 && <div className="clean"><span>✓</span><h3>Looking good</h3><p>No Fountain corrections found.</p></div>}
+          {correctionCount === 0 && <div className="clean"><span>✓</span><h3>Looking good</h3><p>No Fountain or spelling corrections found.</p></div>}
           {parsed.diagnostics.map((diagnostic, index) => <article className="correction" key={`${diagnostic.start}-${index}`}><button onClick={() => jumpTo(diagnostic.start, diagnostic.length)}><strong>Line {diagnostic.line + 1}</strong><span>{diagnostic.message}</span></button><button className="fix" onClick={() => applyFix(diagnostic)}>Apply fix</button></article>)}
+          {spellingIssues.map((issue) => <article className="correction spelling-correction" key={`spelling-${issue.start}`}><button onClick={() => jumpTo(issue.start, issue.length)}><strong>Line {issue.line + 1} · Spelling</strong><span>“{issue.word}” is not in the English or screenplay dictionary.</span></button></article>)}
         </> : <div className="production-panel"><label>Production format<select value={productionType} onChange={(event) => void saveProductionType(event.target.value as ProductionType)}>{(Object.keys(productionLabels) as ProductionType[]).map((value) => <option key={value} value={value}>{productionLabels[value]}</option>)}</select></label><details className="production-constraints" open><summary>Production constraints</summary><div><label>Target runtime (minutes)<input type="number" min="1" value={productionProfile.targetRuntimeMinutes ?? ''} onChange={(event) => setProductionProfile({ ...productionProfile, targetRuntimeMinutes: event.target.value ? Number(event.target.value) : null })} /></label><label>Target audience<input value={productionProfile.targetAudience} onChange={(event) => setProductionProfile({ ...productionProfile, targetAudience: event.target.value })} /></label><label>Budget tier<select value={productionProfile.budgetTier} onChange={(event) => setProductionProfile({ ...productionProfile, budgetTier: event.target.value as BudgetTier })}><option value="unspecified">Not specified</option><option value="micro">Micro</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label><label>Target maximum cast<input type="number" min="1" value={productionProfile.castSizeTarget ?? ''} onChange={(event) => setProductionProfile({ ...productionProfile, castSizeTarget: event.target.value ? Number(event.target.value) : null })} /></label><label>Available locations or settings<textarea value={productionProfile.availableLocations} onChange={(event) => setProductionProfile({ ...productionProfile, availableLocations: event.target.value })} /></label><label>Stage dimensions / playing space<input value={productionProfile.stageDimensions} onChange={(event) => setProductionProfile({ ...productionProfile, stageDimensions: event.target.value })} placeholder="e.g. 30 ft × 20 ft proscenium" /></label><label>Available equipment, effects, and resources<textarea value={productionProfile.availableResources} onChange={(event) => setProductionProfile({ ...productionProfile, availableResources: event.target.value })} /></label><button onClick={() => void saveProductionProfile()}>Save production settings</button></div></details>
         </div>}</div>
       </aside>
     </main> : <StageLayout documentName={filename} sceneLines={parsed.lines.filter((line) => line.type === 'scene')} onStatus={setStatus} />}
     {focusMode && <div className="focus-controls"><button className={!focusPdfEnabled ? 'active' : ''} onClick={() => { setFocusPdfEnabled(false); requestAnimationFrame(() => editor.current?.focus()); }}>Fountain</button><button className={focusPdfEnabled ? 'active' : ''} onClick={() => { setFocusPdfEnabled(true); setFocusPreviewContent(content); }}>PDF Preview</button><button onClick={() => setFocusMode(false)}><span>Focus Mode</span> Exit <kbd>Esc</kbd></button></div>}
+    {spellingMenu && <div className="spelling-menu" role="menu" style={{ left: spellingMenu.x, top: spellingMenu.y }} onPointerDown={(event) => event.stopPropagation()}><header>“{spellingMenu.misspelling.word}”</header>{spellingMenu.suggestions.map((suggestion) => <button key={suggestion} role="menuitem" onClick={() => replaceMisspelling(suggestion)}>{suggestion}</button>)}{spellingMenu.suggestions.length === 0 && <small>No suggestions found</small>}<hr /><button role="menuitem" onClick={() => void addToScreenplayDictionary()}>Add to this screenplay dictionary</button></div>}
+    {dictionaryOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDictionaryOpen(false); }}><section className="dictionary-dialog" role="dialog" aria-modal="true" aria-labelledby="dictionary-title"><header><div><small>SPELL CHECKING</small><h2 id="dictionary-title">Screenplay dictionary</h2><p>These words are accepted only for {filename}.</p></div><button onClick={() => setDictionaryOpen(false)} aria-label="Close">×</button></header><div className="dictionary-words">{customDictionary.length === 0 && <p className="empty">No custom words yet. Right-click an underlined word in the editor to add it.</p>}{customDictionary.map((word) => <div key={word}><span>{word}</span><button onClick={() => void saveCustomDictionary(customDictionary.filter((item) => item !== word), `Removed “${word}” from this screenplay's dictionary`)}>Remove</button></div>)}</div><footer><span>{customDictionary.length} custom word{customDictionary.length === 1 ? '' : 's'}</span><button onClick={() => setDictionaryOpen(false)}>Close</button></footer></section></div>}
     {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
     {characterCardOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCharacterCardOpen(false); }}><section className="character-card-dialog" role="dialog" aria-modal="true" aria-labelledby="character-card-title"><header><div><small>CASTING NOTES</small><h2 id="character-card-title">{draftCharacterCard.name}</h2><p>Saved with this screenplay on the NAS.</p></div><button onClick={() => setCharacterCardOpen(false)} aria-label="Close">×</button></header><div className="character-card-fields"><label>Approximate age or range<input value={draftCharacterCard.age} onChange={(event) => setDraftCharacterCard({ ...draftCharacterCard, age: event.target.value })} placeholder="e.g. late 20s or 35–45" /></label><label>Casting<select value={draftCharacterCard.casting} onChange={(event) => setDraftCharacterCard({ ...draftCharacterCard, casting: event.target.value as CharacterCard['casting'] })}><option value="any">Any gender</option><option value="female">Female</option><option value="male">Male</option></select></label><label>Character traits<textarea value={draftCharacterCard.traits} onChange={(event) => setDraftCharacterCard({ ...draftCharacterCard, traits: event.target.value })} placeholder="Driven, guarded, quick-witted…" /></label><label>Description<textarea value={draftCharacterCard.description} onChange={(event) => setDraftCharacterCard({ ...draftCharacterCard, description: event.target.value })} placeholder="Role in the story, physical or vocal notes, relationships, and arc…" /></label></div><footer>{characterCards.some((card) => card.name === draftCharacterCard.name) && <button className="danger" onClick={() => void deleteCharacterCard()}>Delete card</button>}<span /><button onClick={() => setCharacterCardOpen(false)}>Cancel</button><button className="primary" onClick={() => void saveCharacterCard()}>Save card</button></footer></section></div>}
     {revisionsOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRevisionsOpen(false); }}><section className="revisions-dialog" role="dialog" aria-modal="true" aria-labelledby="revisions-title"><header><div><small>RECOVERY</small><h2 id="revisions-title">Revision history</h2><p>Loading a snapshot changes only the editor. The current NAS copy is preserved until you explicitly save.</p></div><button onClick={() => setRevisionsOpen(false)} aria-label="Close">×</button></header><div className="revision-settings"><label>Autosave<select value={autosaveSeconds} onChange={(event) => { const value = Number(event.target.value); setAutosaveSeconds(value); void saveDocumentSettings({ autosaveSeconds: value }); }}><option value="0">Off</option><option value="30">Every 30 seconds</option><option value="60">Every minute</option><option value="120">Every 2 minutes</option><option value="300">Every 5 minutes</option></select></label><label>Keep snapshots<input type="number" min="5" max="100" value={revisionRetention} onChange={(event) => setRevisionRetention(Math.min(100, Math.max(5, Number(event.target.value) || 20)))} onBlur={() => void saveDocumentSettings()} /></label></div><div className="revision-list">{revisions.length === 0 && <p className="empty">No recovery snapshots yet. A snapshot is created when autosave runs after an edit.</p>}{revisions.map((revision) => <article key={revision.id}><div><strong>{new Date(revision.createdAt).toLocaleString()}</strong><span>Revision {revision.fingerprint} · {revision.words} words · {Math.max(1, Math.round(revision.size / 1024))} KB</span></div><button onClick={() => void restoreRevision(revision.id)}>Load in editor</button></article>)}</div><footer><button onClick={() => setRevisionsOpen(false)}>Close</button></footer></section></div>}

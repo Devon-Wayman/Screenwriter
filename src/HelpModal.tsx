@@ -44,6 +44,7 @@ export default function HelpModal({ onClose }: HelpModalProps) {
           <h3>A screenplay is still plain text</h3><p>Leave a blank line between screenplay elements. Screenwriter recognizes what you type, colors it, and formats it later for PDF.</p>
           <div className="help-steps"><article><b>1</b><div><strong>Set the location</strong><p>Start with <code>INT.</code>, <code>EXT.</code>, or <code>INT./EXT.</code>, then add the location and time.</p></div></article><article><b>2</b><div><strong>Describe what happens</strong><p>Action is ordinary sentence-case text separated by blank lines.</p></div></article><article><b>3</b><div><strong>Let someone speak</strong><p>Put an uppercase character cue on its own line. Dialogue follows immediately below it.</p></div></article></div>
           <aside className="help-callout"><strong>Fastest dialogue workflow</strong><p>On a blank line, press <kbd>Tab</kbd>, type the character name after <code>@</code>, then press <kbd>Enter</kbd> and write the dialogue.</p></aside>
+          <aside className="help-callout"><strong>Screenplay spell checking</strong><p>Right-click a red-underlined word for corrections or to add a name, location, or production term to this screenplay's dictionary. Review accepted words under <strong>File → Screenplay dictionary</strong>.</p></aside>
         </>}
         {tab === 'syntax' && <>
           <h3>Fountain 1.1 reference</h3><div className="syntax-reference">

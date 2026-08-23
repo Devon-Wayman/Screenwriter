@@ -14,6 +14,8 @@ Screenplays remain ordinary `.fountain` text files. There is no proprietary proj
 - Smart Enter and Tab screenplay navigation
 - Application-owned undo and redo history
 - Search, scene navigation, adjustable text size, and multiple themes
+- Debounced offline English spell checking with correction suggestions
+- Per-screenplay custom dictionaries with right-click add and removal controls
 - In-app Fountain and keyboard guide with animated examples
 
 ### Fountain 1.1
@@ -223,6 +225,8 @@ The Docker mount at `/data` is the source of truth for saved screenplays. Import
 
 Stage layouts are available from the **Stage Layout** workspace tab. Each Fountain scene heading receives its own diagram, where set pieces, boundaries, labels, lights, and actors can be placed and labeled. Layouts autosave as editable vector data in JSON sidecars beneath `/data/stage-layouts`; the Fountain screenplay remains plain text and portable. The canvas is rendered as SVG in the browser, but separate `.svg` image files are not generated. Numbered scenes keep layouts associated more reliably when scenes are reordered, while unnumbered scenes are matched by heading and position.
 
+Spell checking runs entirely in the browser from a bundled English dictionary and remains available offline. A built-in screenplay vocabulary accepts expected Fountain and production shorthand such as `INT.`, `EXT.`, `V.O.`, `O.S.`, `CONT'D`, `SFX`, `VFX`, `POV`, and `INTERCUT`. Right-click an underlined word to apply a suggestion or add it to the active screenplay's custom dictionary. Custom words persist in `/data/spelling-dictionaries.json`, with a local browser copy retained for offline work. Use **File → Screenplay dictionary** to review or remove accepted words.
+
 Renaming a screenplay currently starts a new layout sidecar. Rename the corresponding file in `/data/stage-layouts` as well if an existing layout must follow a manually renamed screenplay.
 
 Include the host screenplay directory in NAS snapshots and off-device backups. A NAS copy alone is not protection against disk failure, accidental deletion, or hardware loss.
@@ -236,7 +240,8 @@ The default retention is 20 snapshots per screenplay and can be configured from 
 ## Current limitations
 
 - No built-in authentication or multi-user permissions
-- Offline synchronization currently covers Fountain document content; character cards, production settings, stage layouts, and revision-history browsing still require the NAS connection
+- Offline synchronization currently covers Fountain document content and screenplay dictionary additions; character cards, production settings, stage layouts, and revision-history browsing still require the NAS connection
+- The bundled spelling dictionary is English; additional language dictionaries are not yet selectable
 - The installed PWA synchronizes with the origin it was installed from; switching between multiple server addresses is not yet available in-app
 - No real-time collaborative editing
 - No Final Draft `.fdx` import/export
