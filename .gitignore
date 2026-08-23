@@ -22,3 +22,6 @@ screenplays/
 .idea/
 *.swp
 *.swo
+
+# Personal reference notes
+GIT-CHEATSHEET.local.md
