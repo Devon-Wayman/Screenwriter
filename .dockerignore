@@ -1,6 +1,9 @@
 node_modules
 dist
 server-dist
+build
+electron
+release
 data
 screenplays
 .git

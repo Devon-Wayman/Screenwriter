@@ -4,7 +4,7 @@
   "author": "Devon Wayman",
   "private": true,
   "main": "electron/main.mjs",
-  "version": "2.1.6",
+  "version": "2.1.8",
   "type": "module",
   "scripts": {
     "dev": "concurrently \"vite\" \"tsx watch server/index.ts\"",
@@ -15,36 +15,65 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "latest",
-    "dictionary-en": "^4.0.0",
-    "express": "latest",
-    "jspdf": "^4.2.1",
-    "nspell": "^2.1.5",
-    "react": "latest",
-    "react-dom": "latest",
-    "vite": "latest"
+    "express": "latest"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "latest",
     "@types/express": "latest",
     "@types/node": "latest",
     "@types/nspell": "^2.1.6",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "concurrently": "latest",
+    "dictionary-en": "^4.0.0",
     "electron": "^43.4.1",
     "electron-builder": "^26.15.3",
+    "jspdf": "^4.2.1",
+    "nspell": "^2.1.5",
+    "react": "latest",
+    "react-dom": "latest",
     "tsx": "latest",
     "typescript": "latest",
+    "vite": "latest",
     "vitest": "latest"
   },
   "build": {
     "appId": "com.devonwayman.screenwriter",
     "productName": "Screenwriter",
     "asar": true,
-    "directories": { "output": "release" },
-    "files": ["electron/**/*", "dist/**/*", "server-dist/**/*", "package.json"],
-    "mac": { "target": ["dmg", "zip"], "category": "public.app-category.productivity" },
-    "win": { "target": ["nsis", "portable"] },
-    "linux": { "target": ["AppImage"], "category": "Office" }
+    "electronLanguages": [
+      "en-US"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "dist/**/*",
+      "server-dist/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Office",
+      "icon": "build/icon.png"
+    }
   }
 }

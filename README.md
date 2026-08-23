@@ -92,7 +92,7 @@ npm start
 
 ## Standalone desktop application
 
-The Electron build packages the same React editor and Express storage service into a desktop application. It does not connect to a NAS: screenplays, revisions, layouts, character cards, and dictionaries are stored beneath the operating system's Screenwriter application-data directory. The interface automatically switches from NAS wording to local-storage wording through the server's `APP_MODE=standalone` runtime flag. Desktop builds use the operating system's native **File** menu for New, Open, Save, exports, dictionary management, and revision history; the browser-only File control is hidden to avoid presenting duplicate menus.
+The Electron build packages the same React editor and Express storage service into a desktop application. It does not connect to a NAS: screenplays, revisions, layouts, character cards, and dictionaries are stored beneath the operating system's Screenwriter application-data directory. The interface automatically switches from NAS wording to local-storage wording through the server's `APP_MODE=standalone` runtime flag. Desktop builds use the operating system's native **File** menu for New, Open, Save, exports, dictionary management, and revision history, plus the native **Edit** menu for application-owned undo and redo; duplicate browser toolbar controls are hidden in standalone mode.
 
 Build for the current operating system:
 
@@ -109,6 +109,10 @@ Or select a target explicitly:
 ```
 
 Artifacts are written to `release/`, which is ignored by Git. Building macOS applications should be done on macOS. Windows installers are most reliable when built on Windows, and Linux AppImages on Linux; cross-platform packaging can require additional host tools such as Wine.
+
+Standalone application artwork is kept entirely under `build/`: `icon-source.png` preserves the original design, `icon-rounded.png` is the transparent-corner derivative, `icon.png` is the 1024 px desktop master, and `icon.ico` contains the Windows sizes. Electron Builder derives the macOS and Linux package icons from the PNG. These assets are excluded from Docker build contexts and NAS source synchronization.
+
+Only Express is packaged as a Node runtime dependency. React, Vite, PDF generation, and spell-checking libraries are compiled into the client bundle and remain development/build dependencies so Electron Builder does not duplicate them in the application archive. Electron's Chromium resources retain only the `en-US` locale while the Screenwriter interface is English-only.
 
 For a development launch using production-built assets:
 

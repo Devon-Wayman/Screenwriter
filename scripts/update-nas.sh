@@ -86,6 +86,9 @@ rsync -az --human-readable --progress \
   --exclude 'node_modules/' \
   --exclude 'dist/' \
   --exclude 'server-dist/' \
+  --exclude 'build/' \
+  --exclude 'electron/' \
+  --exclude 'release/' \
   --exclude 'data/' \
   --exclude 'screenplays/' \
   --exclude '*.tsbuildinfo' \
