@@ -14,6 +14,7 @@ const packageInfo = JSON.parse(await readFile(path.join(appRoot, 'package.json')
 const appVersion = process.env.APP_VERSION || packageInfo.version || '0.0.0';
 const documentSettingsPath = path.join(dataDir, 'document-settings.json');
 const characterCardsPath = path.join(dataDir, 'character-cards.json');
+const spellingDictionariesPath = path.join(dataDir, 'spelling-dictionaries.json');
 const stageLayoutsDir = path.join(dataDir, 'stage-layouts');
 const legacyProjectsDir = path.join(dataDir, '.projects');
 
@@ -105,6 +106,27 @@ app.put('/api/character-cards/:name', async (request, response, next) => {
     }).filter((card) => card.name);
     await mkdir(dataDir, { recursive: true }); const temporaryPath = `${characterCardsPath}.${process.pid}.tmp`;
     await writeFile(temporaryPath, JSON.stringify(cards, null, 2), 'utf8'); await rename(temporaryPath, characterCardsPath); response.json(cards[name]);
+  } catch (error) { next(error); }
+});
+
+async function readSpellingDictionaries() { try { return JSON.parse(await readFile(spellingDictionariesPath, 'utf8')) as Record<string, unknown>; } catch { return {}; } }
+function spellingWords(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((word) => String(word).trim().toLocaleLowerCase()).filter((word) => /^[\p{L}][\p{L}\p{M}'’.-]{0,99}$/u.test(word)))].sort((a, b) => a.localeCompare(b)).slice(0, 5000);
+}
+
+app.get('/api/spelling-dictionary/:name', async (request, response, next) => {
+  try { const name = safeFilename(request.params.name); const dictionaries = await readSpellingDictionaries(); response.json(spellingWords(dictionaries[name])); }
+  catch (error) { next(error); }
+});
+
+app.put('/api/spelling-dictionary/:name', async (request, response, next) => {
+  try {
+    const name = safeFilename(request.params.name); const words = spellingWords(request.body);
+    if (!Array.isArray(request.body) || request.body.length > 5000) return response.status(400).json({ error: 'Invalid screenplay dictionary.' });
+    const dictionaries = await readSpellingDictionaries(); dictionaries[name] = words;
+    await mkdir(dataDir, { recursive: true }); const temporaryPath = `${spellingDictionariesPath}.${process.pid}.tmp`;
+    await writeFile(temporaryPath, JSON.stringify(dictionaries, null, 2), 'utf8'); await rename(temporaryPath, spellingDictionariesPath); response.json(words);
   } catch (error) { next(error); }
 });
 
